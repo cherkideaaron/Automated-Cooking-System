@@ -1,0 +1,16 @@
+venv/
+pycache/
+
+.env
+
+.vscode/
+.idea/
+
+node_modules/
+
+.expo/
+
+android/
+ios/
+
+
