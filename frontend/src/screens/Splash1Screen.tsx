@@ -1,49 +1,60 @@
-import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect } from 'react';
+import { View, Text, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 
 export default function Splash1Screen() {
-    const router = useRouter();
+  const router = useRouter();
 
-    return (
-        <SafeAreaView style={styles.container}>
-            <View style={styles.content}>
-                <Text style={styles.text}>Welcome to Splash 1</Text>
-            </View>
-            <View style={styles.footer}>
-                <View style={styles.placeholder} />
-                <TouchableOpacity onPress={() => router.push('./splash2')}>
-                    <Ionicons name="arrow-forward" size={32} color="black" />
-                </TouchableOpacity>
-            </View>
-        </SafeAreaView>
-    );
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      router.replace('/splash2');
+    }, 2200);
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <View style={styles.center}>
+        <View style={styles.logoCircle}>
+          <Ionicons name="restaurant" size={48} color="#E53935" />
+        </View>
+
+        <Text style={styles.title}>Smart Cooker</Text>
+        <Text style={styles.subtitle}>Culinary Precision</Text>
+      </View>
+    </SafeAreaView>
+  );
 }
 
 const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: '#fff',
-        justifyContent: 'space-between',
-        padding: 24,
-    },
-    content: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    text: {
-        fontSize: 24,
-        fontWeight: 'bold',
-    },
-    footer: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 24,
-    },
-    placeholder: {
-        width: 32,
-    },
+  container: {
+    flex: 1,
+    backgroundColor: '#0B0B0F',
+    justifyContent: 'center',
+  },
+  center: {
+    alignItems: 'center',
+  },
+  logoCircle: {
+    width: 110,
+    height: 110,
+    borderRadius: 55,
+    backgroundColor: 'rgba(229,57,53,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 24,
+  },
+  title: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#fff',
+  },
+  subtitle: {
+    color: '#aaa',
+    marginTop: 6,
+    letterSpacing: 1,
+  },
 });
