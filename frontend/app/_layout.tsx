@@ -1,31 +1,44 @@
+import { DarkTheme, ThemeProvider as NavThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
-import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import { View } from 'react-native';
-
-// Define a custom theme that strictly uses your dark color
-const CustomDarkTheme = {
-  ...DarkTheme,
-  colors: {
-    ...DarkTheme.colors,
-    background: '#0B0B0F',
-    card: '#0B0B0F',
-  },
-};
+import Toast from 'react-native-toast-message';
+import { toastConfig } from '../src/components/ToastConfig';
+import { ThemeProvider as AppThemeProvider, useTheme } from '../src/context/ThemeContext';
 
 export default function RootLayout() {
   return (
-    <ThemeProvider value={CustomDarkTheme}>
-      {/* We also add a background color to a wrapping View 
-        just in case the ThemeProvider has a frame delay 
-      */}
-      <View style={{ flex: 1, backgroundColor: '#0B0B0F' }}>
+    <AppThemeProvider>
+      <MainLayout />
+    </AppThemeProvider>
+  );
+}
+
+function MainLayout() {
+  const { colors, isDark } = useTheme();
+
+  const navTheme = {
+    dark: isDark,
+    colors: {
+      primary: colors.primary,
+      background: colors.background,
+      card: colors.card,
+      text: colors.text,
+      border: colors.border,
+      notification: colors.error,
+    },
+    fonts: DarkTheme.fonts
+  };
+
+  const currentTheme = isDark ? DarkTheme : navTheme;
+
+  return (
+    <NavThemeProvider value={navTheme}>
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
         <Stack
           screenOptions={{
             headerShown: false,
-            // Keep this as a secondary layer of protection
-            contentStyle: { backgroundColor: '#0B0B0F' },
-            // This forces the animation to not show underlying layers
-            animation: 'fade', 
+            contentStyle: { backgroundColor: colors.background },
+            animation: 'fade',
           }}
         >
           <Stack.Screen name="index" />
@@ -36,6 +49,7 @@ export default function RootLayout() {
           <Stack.Screen name="(dashboard)" />
         </Stack>
       </View>
-    </ThemeProvider>
+      <Toast config={toastConfig} />
+    </NavThemeProvider>
   );
 }

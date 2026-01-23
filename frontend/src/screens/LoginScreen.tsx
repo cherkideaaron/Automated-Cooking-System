@@ -1,21 +1,23 @@
+import { FontAwesome, Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { 
-  View, 
-  Text, 
-  TextInput, 
-  Pressable, 
-  StyleSheet, 
-  KeyboardAvoidingView, 
-  Platform, 
-  ScrollView 
+import {
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { Ionicons, FontAwesome } from '@expo/vector-icons';
+import Toast from 'react-native-toast-message';
+import { useTheme } from '../context/ThemeContext';
 
 export default function LoginScreen() {
+  const { colors, isDark } = useTheme();
   const router = useRouter();
-
   const [isSignIn, setIsSignIn] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState('');
@@ -24,29 +26,79 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async () => {
+    // Basic validation
+    if (!email.trim() || !password.trim()) {
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Please fill in email and password'
+      });
+      return;
+    }
+
+    if (!isSignIn && !name.trim()) {
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Please enter your full name'
+      });
+      return;
+    }
+
     setLoading(true);
-    // simulate login
+
+    // For now — simple credential check (to be replaced with Supabase later)
+    const correctEmail = 'kevindeaaron53@gmail.com';
+    const correctPassword = 'Aaron@123';
+
     setTimeout(() => {
       setLoading(false);
-      router.replace('./(dashboard)');
+
+      if (isSignIn) {
+        // Login mode
+        if (email.trim().toLowerCase() === correctEmail.toLowerCase() &&
+          password === correctPassword) {
+          router.replace('./(dashboard)');
+          // or: router.replace('./(dashboard)');  ← use whichever matches your folder structure
+        } else {
+          Toast.show({
+            type: 'error',
+            text1: 'Login Failed',
+            text2: 'Invalid email or password'
+          });
+        }
+      } else {
+        // Sign up mode — for demo we just let them through
+        // (later you'll create the user in Supabase here)
+        // (later you'll create the user in Supabase here)
+        Toast.show({
+          type: 'success',
+          text1: 'Account Created',
+          text2: 'Welcome! You can now sign in.'
+        });
+        setIsSignIn(true); // switch back to sign-in view
+        setName('');
+        setEmail('');
+        setPassword('');
+      }
     }, 1200);
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <KeyboardAvoidingView 
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={{ flex: 1 }}
       >
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          
+
           {/* TOP HEADER SECTION */}
           <View style={styles.header}>
             <View style={styles.logoCircle}>
               <Ionicons name="restaurant" size={32} color="#E53935" />
             </View>
-            <Text style={styles.title}>Smart Cooker</Text>
-            <Text style={styles.subtitle}>
+            <Text style={[styles.title, { color: colors.text }]}>Smart Cooker</Text>
+            <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
               {isSignIn ? 'Sign in to your kitchen' : 'Join the smart cooking revolution'}
             </Text>
           </View>
@@ -55,40 +107,42 @@ export default function LoginScreen() {
           <View style={styles.form}>
             {!isSignIn && (
               <View style={styles.inputGroup}>
-                <Text style={styles.label}>Full Name</Text>
+                <Text style={[styles.label, { color: colors.textSecondary }]}>Full Name</Text>
                 <TextInput
                   placeholder="John Doe"
-                  placeholderTextColor="#555"
+                  placeholderTextColor={colors.textSecondary}
                   value={name}
                   onChangeText={setName}
-                  style={styles.input}
+                  style={[styles.input, { backgroundColor: colors.inputBackground, borderColor: colors.border, color: colors.text }]}
                 />
               </View>
             )}
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Email Address</Text>
+              <Text style={[styles.label, { color: colors.textSecondary }]}>Email Address</Text>
               <TextInput
                 placeholder="you@example.com"
-                placeholderTextColor="#555"
+                placeholderTextColor={colors.textSecondary}
                 value={email}
                 onChangeText={setEmail}
-                style={styles.input}
+                style={[styles.input, { backgroundColor: colors.inputBackground, borderColor: colors.border, color: colors.text }]}
                 keyboardType="email-address"
                 autoCapitalize="none"
+                autoCorrect={false}
               />
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Password</Text>
-              <View style={styles.passwordRow}>
+              <Text style={[styles.label, { color: colors.textSecondary }]}>Password</Text>
+              <View style={[styles.passwordRow, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
                 <TextInput
                   placeholder="••••••••"
-                  placeholderTextColor="#555"
+                  placeholderTextColor={colors.textSecondary}
                   secureTextEntry={!showPassword}
                   value={password}
                   onChangeText={setPassword}
-                  style={styles.passwordInput}
+                  style={[styles.passwordInput, { color: colors.text }]}
+                  autoCorrect={false}
                 />
                 <Pressable onPress={() => setShowPassword(!showPassword)} style={styles.eyeIcon}>
                   <Ionicons
@@ -107,8 +161,8 @@ export default function LoginScreen() {
             )}
 
             {/* PRIMARY BUTTON */}
-            <Pressable 
-              style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.9 }]} 
+            <Pressable
+              style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.9 }]}
               onPress={handleSubmit}
               disabled={loading}
             >
@@ -139,16 +193,14 @@ export default function LoginScreen() {
             </View>
 
             <View style={styles.socialRow}>
-              <Pressable style={styles.socialBtn}>
-                <FontAwesome name="google" size={24} color="#fff" />
+              <Pressable style={[styles.socialBtn, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                <FontAwesome name="google" size={24} color={colors.text} />
               </Pressable>
-
-              <Pressable style={styles.socialBtn}>
-                <FontAwesome name="apple" size={24} color="#fff" />
+              <Pressable style={[styles.socialBtn, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                <FontAwesome name="apple" size={24} color={colors.text} />
               </Pressable>
-
-              <Pressable style={styles.socialBtn}>
-                <FontAwesome name="facebook" size={24} color="#fff" />
+              <Pressable style={[styles.socialBtn, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                <FontAwesome name="facebook" size={24} color={colors.text} />
               </Pressable>
             </View>
           </View>
@@ -159,6 +211,9 @@ export default function LoginScreen() {
   );
 }
 
+// ────────────────────────────────────────────────
+// Styles remain 100% unchanged
+// ────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: {
     flex: 1,

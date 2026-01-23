@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { DrawerContentScrollView, DrawerItem, DrawerItemList } from '@react-navigation/drawer';
 import { useRouter } from 'expo-router';
 import { Drawer } from 'expo-router/drawer';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 function CustomDrawerContent(props: any) {
@@ -10,6 +10,15 @@ function CustomDrawerContent(props: any) {
 
     return (
         <DrawerContentScrollView {...props} contentContainerStyle={{ flex: 1 }}>
+            {/* Machine Name Header */}
+            <View style={styles.machineHeader}>
+                <View style={styles.iconContainer}>
+                    <Ionicons name="restaurant" size={32} color="#E53935" />
+                </View>
+                <Text style={styles.machineName}>AutoChef Pro</Text>
+                <Text style={styles.machineSubtitle}>Smart Cooking System</Text>
+            </View>
+
             <View style={{ flex: 1 }}>
                 <DrawerItemList {...props} />
             </View>
@@ -28,68 +37,102 @@ function CustomDrawerContent(props: any) {
     );
 }
 
+import { PaymentProvider } from '../../src/context/PaymentContext';
+
 export default function DashboardLayout() {
     return (
-        <GestureHandlerRootView style={{ flex: 1 }}>
-            <Drawer drawerContent={(props) => <CustomDrawerContent {...props} />}>
-                <Drawer.Screen
-                    name="(tabs)"
-                    options={{
-                        drawerLabel: 'Home',
-                        title: 'Home',
-                        drawerIcon: ({ color, size }) => <Ionicons name="home-outline" size={size} color={color} />,
-                    }}
-                />
-                <Drawer.Screen
-                    name="monitoring"
-                    options={{
-                        drawerLabel: 'Monitoring',
-                        title: 'Monitoring',
-                        drawerIcon: ({ color, size }) => <Ionicons name="speedometer-outline" size={size} color={color} />,
-                    }}
-                />
-                <Drawer.Screen
-                    name="custom"
-                    options={{
-                        drawerLabel: 'Custom',
-                        title: 'Custom',
-                        drawerIcon: ({ color, size }) => <Ionicons name="build-outline" size={size} color={color} />,
-                    }}
-                />
-                <Drawer.Screen
-                    name="notifications"
-                    options={{
-                        drawerLabel: 'Notifications',
-                        title: 'Notifications',
-                        drawerIcon: ({ color, size }) => <Ionicons name="notifications-outline" size={size} color={color} />,
-                    }}
-                />
-                <Drawer.Screen
-                    name="settings"
-                    options={{
-                        drawerLabel: 'Settings',
-                        title: 'Settings',
-                        drawerIcon: ({ color, size }) => <Ionicons name="settings-outline" size={size} color={color} />,
-                    }}
-                />
-                <Drawer.Screen
-                    name="about"
-                    options={{
-                        drawerLabel: 'About',
-                        title: 'About',
-                        drawerIcon: ({ color, size }) => <Ionicons name="information-circle-outline" size={size} color={color} />,
-                    }}
-                />
-            </Drawer>
-        </GestureHandlerRootView>
+        <PaymentProvider>
+            <GestureHandlerRootView style={{ flex: 1 }}>
+                <Drawer drawerContent={(props) => <CustomDrawerContent {...props} />}>
+                    <Drawer.Screen
+                        name="(tabs)"
+                        options={{
+                            drawerLabel: 'Home',
+                            title: 'Home',
+                            drawerIcon: ({ color, size }) => <Ionicons name="home-outline" size={size} color={color} />,
+                        }}
+                    />
+                    <Drawer.Screen
+                        name="monitoring"
+                        options={{
+                            drawerLabel: 'Monitoring',
+                            title: 'Monitoring',
+                            drawerIcon: ({ color, size }) => <Ionicons name="speedometer-outline" size={size} color={color} />,
+                        }}
+                    />
+                    <Drawer.Screen
+                        name="custom"
+                        options={{
+                            drawerLabel: 'Custom',
+                            title: 'Custom',
+                            drawerIcon: ({ color, size }) => <Ionicons name="build-outline" size={size} color={color} />,
+                        }}
+                    />
+                    <Drawer.Screen
+                        name="notifications"
+                        options={{
+                            drawerLabel: 'Notifications',
+                            title: 'Notifications',
+                            drawerIcon: ({ color, size }) => <Ionicons name="notifications-outline" size={size} color={color} />,
+                        }}
+                    />
+                    <Drawer.Screen
+                        name="settings"
+                        options={{
+                            drawerLabel: 'Settings',
+                            title: 'Settings',
+                            drawerIcon: ({ color, size }) => <Ionicons name="settings-outline" size={size} color={color} />,
+                        }}
+                    />
+                    <Drawer.Screen
+                        name="about"
+                        options={{
+                            drawerLabel: 'About',
+                            title: 'About',
+                            drawerIcon: ({ color, size }) => <Ionicons name="information-circle-outline" size={size} color={color} />,
+                        }}
+                    />
+                </Drawer>
+            </GestureHandlerRootView>
+        </PaymentProvider>
     );
 }
 
 const styles = StyleSheet.create({
+    machineHeader: {
+        padding: 20,
+        paddingTop: 16,
+        paddingBottom: 24,
+        borderBottomWidth: 1,
+        borderBottomColor: '#2a2a2a',
+        marginBottom: 8,
+        alignItems: 'center',
+    },
+    iconContainer: {
+        width: 64,
+        height: 64,
+        borderRadius: 32,
+        backgroundColor: '#15151C',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginBottom: 12,
+        borderWidth: 2,
+        borderColor: '#E53935',
+    },
+    machineName: {
+        fontSize: 20,
+        fontWeight: '700',
+        color: '#fff',
+        marginBottom: 4,
+    },
+    machineSubtitle: {
+        fontSize: 13,
+        color: '#aaa',
+    },
     logoutItem: {
         marginTop: 'auto',
         borderTopWidth: 1,
-        borderTopColor: '#eee',
+        borderTopColor: '#2a2a2a',
     },
     logoutLabel: {
         color: 'red',
