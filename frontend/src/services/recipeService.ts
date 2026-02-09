@@ -13,6 +13,7 @@ type CookingStep = Database['public']['Tables']['cooking_steps']['Row'];
 export interface RecipeWithDetails extends Recipe {
     ingredients?: Array<RecipeIngredient & { ingredient: Ingredient }>;
     cooking_steps?: CookingStep[];
+    profiles?: Database['public']['Tables']['profiles']['Row'];
 }
 
 class RecipeService {
@@ -29,7 +30,8 @@ class RecipeService {
             *,
             ingredient:ingredients(*)
           ),
-          cooking_steps(*)
+          cooking_steps(*),
+          profiles:owner_id(*)
         `)
                 .order('created_at', { ascending: false });
 
@@ -58,7 +60,8 @@ class RecipeService {
             *,
             ingredient:ingredients(*)
           ),
-          cooking_steps(*)
+          cooking_steps(*),
+          profiles:owner_id(*)
         `)
                 .eq('recipe_id', recipeId)
                 .single();
@@ -352,6 +355,173 @@ class RecipeService {
             return data;
         } catch (error) {
             console.error('Error in createIngredient:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Create a purchase request
+     */
+    async createPurchaseRequest(
+        recipeId: string,
+        amountPaid: number,
+        phoneNumber: string,
+        receiptImgUrl: string
+    ): Promise<boolean> {
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error('No user logged in');
+
+            const { error } = await supabase
+                .from('purchases')
+                .insert({
+                    buyer_id: user.id,
+                    recipe_id: recipeId,
+                    amount_paid: amountPaid,
+                    phone_number: phoneNumber,
+                    receipt_img_url: receiptImgUrl,
+                    status: 'pending'
+                });
+
+            if (error) {
+                console.error('Error creating purchase request:', error);
+                throw error;
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Error in createPurchaseRequest:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Get incoming purchase requests for recipes owned by the current user
+     */
+    async getIncomingPurchaseRequests(): Promise<any[]> {
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error('No user logged in');
+
+            // First get all recipes owned by user
+            const { data: recipes, error: recipeError } = await supabase
+                .from('recipes')
+                .select('recipe_id')
+                .eq('owner_id', user.id);
+
+            if (recipeError) throw recipeError;
+
+            const recipeIds = recipes.map(r => r.recipe_id);
+
+            if (recipeIds.length === 0) return [];
+
+            // Fetch purchases for these recipes
+            const { data: purchases, error: purchaseError } = await supabase
+                .from('purchases')
+                .select(`
+                    *,
+                    recipes:recipe_id (name, price),
+                    buyer:buyer_id (username)
+                `)
+                .in('recipe_id', recipeIds)
+                .order('created_at', { ascending: false });
+
+            if (purchaseError) throw purchaseError;
+
+            return purchases;
+        } catch (error) {
+            console.error('Error in getIncomingPurchaseRequests:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Approve a purchase request
+     */
+    async approvePurchaseRequest(buyerId: string, recipeId: string): Promise<boolean> {
+        try {
+            const { error } = await supabase
+                .from('purchases')
+                .update({ status: 'approved' })
+                .eq('buyer_id', buyerId)
+                .eq('recipe_id', recipeId);
+
+            if (error) throw error;
+            return true;
+        } catch (error) {
+            console.error('Error in approvePurchaseRequest:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Get IDs of recipes the user has purchased and are approved
+     */
+    async getPurchasedRecipeIds(): Promise<string[]> {
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return [];
+
+            const { data, error } = await supabase
+                .from('purchases')
+                .select('recipe_id')
+                .eq('buyer_id', user.id)
+                .eq('status', 'approved');
+
+            if (error) throw error;
+
+            return data.map(p => p.recipe_id);
+        } catch (error) {
+            console.error('Error in getPurchasedRecipeIds:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Update user profile (username)
+     */
+    async updateProfile(username: string): Promise<boolean> {
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error('No user logged in');
+
+            const { error } = await supabase
+                .from('profiles')
+                .update({
+                    username,
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', user.id);
+
+            if (error) throw error;
+            return true;
+        } catch (error) {
+            console.error('Error in updateProfile:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Get current user profile
+     */
+    async getUserProfile(): Promise<any> {
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return null;
+
+            const { data, error } = await supabase
+                .from('profiles')
+                .select('*')
+                .eq('id', user.id)
+                .single();
+
+            if (error) throw error;
+            return {
+                ...data,
+                email: user.email // Profiles table might not have email, fetch from auth
+            };
+        } catch (error) {
+            console.error('Error in getUserProfile:', error);
             return null;
         }
     }

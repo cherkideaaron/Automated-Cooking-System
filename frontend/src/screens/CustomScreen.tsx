@@ -1,7 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
-import { useState } from 'react';
+import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Image,
   Modal,
   Pressable,
@@ -13,6 +16,9 @@ import {
 } from 'react-native';
 import Toast from 'react-native-toast-message';
 import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../lib/supabase';
+import { recipeService } from '../services/recipeService';
+import { geminiService } from '../services/geminiService';
 
 interface Ingredient {
   id: number;
@@ -41,8 +47,11 @@ interface RecipeSuggestion {
   steps: Step[];
 }
 
+const GEMINI_API_KEY_STORAGE = '@gemini_api_key';
+
 export default function CustomScreen() {
   const { colors } = useTheme();
+  const router = useRouter();
   const [mode, setMode] = useState<'manual' | 'ai'>('manual');
   const [foodName, setFoodName] = useState('');
   const [imageUri, setImageUri] = useState('');
@@ -58,10 +67,29 @@ export default function CustomScreen() {
   const [editingStep, setEditingStep] = useState<Step | null>(null);
 
   // AI Mode states
+  const [apiKey, setApiKey] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
   const [recipeSuggestions, setRecipeSuggestions] = useState<RecipeSuggestion[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState<RecipeSuggestion | null>(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [expandedSuggestionId, setExpandedSuggestionId] = useState<string | null>(null);
+  const [isPublishing, setIsPublishing] = useState(false);
+
+  // Load API key on mount
+  useEffect(() => {
+    loadApiKey();
+  }, []);
+
+  const loadApiKey = async () => {
+    try {
+      const savedKey = await AsyncStorage.getItem(GEMINI_API_KEY_STORAGE);
+      if (savedKey) {
+        setApiKey(savedKey);
+      }
+    } catch (error) {
+      console.error('Error loading API key:', error);
+    }
+  };
 
   // Image Upload Functions
   const pickImage = async () => {
@@ -98,8 +126,8 @@ export default function CustomScreen() {
     }
   };
 
-  // Generate AI Suggestions (Mock)
-  const generateSuggestions = () => {
+  // Generate AI Suggestions using Gemini
+  const generateSuggestions = async () => {
     if (ingredients.length === 0) {
       Toast.show({
         type: 'error',
@@ -110,77 +138,64 @@ export default function CustomScreen() {
       return;
     }
 
-    // Mock AI suggestions based on ingredients
-    const ingredientNames = ingredients.map(i => i.name.toLowerCase());
-    const suggestions: RecipeSuggestion[] = [];
-
-    // Simple logic to generate relevant suggestions
-    if (ingredientNames.some(n => n.includes('pasta') || n.includes('spaghetti'))) {
-      suggestions.push({
-        id: '1',
-        name: 'Classic Pasta Carbonara',
-        duration: 25,
-        servings: Math.max(2, Math.floor(ingredients.reduce((sum, i) => sum + i.amount, 0) / 200)),
-        steps: [
-          { id: 1, instruction: 'add ingredient', ingredientName: 'Water', duration: 5, temperature: 100, stirrerSpeed: 0 },
-          { id: 2, instruction: 'idle', duration: 600, temperature: 100, stirrerSpeed: 0 },
-          { id: 3, instruction: 'add ingredient', ingredientName: 'Pasta', duration: 5, temperature: 95, stirrerSpeed: 0 },
-          { id: 4, instruction: 'stir', duration: 600, temperature: 95, stirrerSpeed: 2 },
-        ]
-      });
+    // Try to load key again if not in state (in case it was just added in settings)
+    let currentKey = apiKey;
+    if (!currentKey) {
+      try {
+        const savedKey = await AsyncStorage.getItem(GEMINI_API_KEY_STORAGE);
+        if (savedKey) {
+          currentKey = savedKey;
+          setApiKey(savedKey);
+        }
+      } catch (e) {
+        console.error('Failed to reload key:', e);
+      }
     }
 
-    if (ingredientNames.some(n => n.includes('rice'))) {
-      suggestions.push({
-        id: '2',
-        name: 'Fried Rice',
-        duration: 20,
-        servings: Math.max(2, Math.floor(ingredients.reduce((sum, i) => sum + i.amount, 0) / 150)),
-        steps: [
-          { id: 1, instruction: 'add ingredient', ingredientName: 'Oil', duration: 5, temperature: 180, stirrerSpeed: 0 },
-          { id: 2, instruction: 'idle', duration: 60, temperature: 180, stirrerSpeed: 0 },
-          { id: 3, instruction: 'add ingredient', ingredientName: 'Rice', duration: 10, temperature: 160, stirrerSpeed: 0 },
-          { id: 4, instruction: 'stir', duration: 300, temperature: 160, stirrerSpeed: 4 },
-        ]
+    if (!currentKey) {
+      Toast.show({
+        type: 'error',
+        text1: 'API Key Required',
+        text2: 'Please configure your Gemini API key in Settings',
+        position: 'bottom'
       });
+      return;
     }
 
-    // Generic suggestions
-    suggestions.push({
-      id: '3',
-      name: 'Mixed Ingredient Stir Fry',
-      duration: 15,
-      servings: Math.max(1, Math.floor(ingredients.reduce((sum, i) => sum + i.amount, 0) / 100)),
-      steps: [
-        { id: 1, instruction: 'add ingredient', ingredientName: 'Oil', duration: 5, temperature: 180, stirrerSpeed: 0 },
-        { id: 2, instruction: 'idle', duration: 60, temperature: 180, stirrerSpeed: 0 },
-        { id: 3, instruction: 'add ingredient', ingredientName: ingredients[0]?.name || 'Ingredients', duration: 10, temperature: 160, stirrerSpeed: 0 },
-        { id: 4, instruction: 'stir', duration: 300, temperature: 160, stirrerSpeed: 4 },
-      ]
-    });
+    setIsGenerating(true);
+    try {
+      // Generate multiple recipe suggestions
+      const suggestions = await geminiService.generateRecipeSuggestions(currentKey, ingredients);
 
-    suggestions.push({
-      id: '4',
-      name: 'Simple Sauté',
-      duration: 12,
-      servings: Math.max(1, Math.floor(ingredients.reduce((sum, i) => sum + i.amount, 0) / 120)),
-      steps: [
-        { id: 1, instruction: 'add ingredient', ingredientName: 'Oil', duration: 5, temperature: 160, stirrerSpeed: 0 },
-        { id: 2, instruction: 'idle', duration: 45, temperature: 160, stirrerSpeed: 0 },
-        { id: 3, instruction: 'add ingredient', ingredientName: ingredients[0]?.name || 'Ingredients', duration: 8, temperature: 140, stirrerSpeed: 0 },
-        { id: 4, instruction: 'stir', duration: 240, temperature: 140, stirrerSpeed: 3 },
-      ]
-    });
+      const parsedSuggestions: RecipeSuggestion[] = suggestions.map((s, index) => ({
+        id: (index + 1).toString(),
+        name: s.name,
+        duration: Math.ceil(s.steps.reduce((sum, step) => sum + step.duration, 0) / 60),
+        servings: Math.max(1, Math.floor(ingredients.reduce((sum, i) => sum + i.amount, 0) / 100)), // Approximate servings
+        steps: s.steps
+      }));
 
-    setRecipeSuggestions(suggestions);
-    setShowSuggestions(true);
-    setExpandedSuggestionId(null); // Reset expanded state
-    Toast.show({
-      type: 'success',
-      text1: 'Suggestions generated!',
-      text2: `Found ${suggestions.length} recipes for you`,
-      position: 'bottom'
-    });
+      setRecipeSuggestions(parsedSuggestions);
+      setShowSuggestions(true);
+      setExpandedSuggestionId(null);
+
+      Toast.show({
+        type: 'success',
+        text1: 'Recipes Generated!',
+        text2: `AI created ${parsedSuggestions.length} options`,
+        position: 'bottom'
+      });
+    } catch (error) {
+      console.error('Error generating recipe:', error);
+      Toast.show({
+        type: 'error',
+        text1: 'Generation Failed',
+        text2: error instanceof Error ? error.message : 'Please check your API key and try again',
+        position: 'bottom'
+      });
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const selectSuggestion = (suggestion: RecipeSuggestion) => {
@@ -200,6 +215,184 @@ export default function CustomScreen() {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return secs > 0 ? `${mins}m ${secs}s` : `${mins}min`;
+  };
+
+  // Publish recipe to database
+  const publishRecipe = async () => {
+    // Validation
+    if (!foodName.trim()) {
+      Toast.show({
+        type: 'error',
+        text1: 'Validation Error',
+        text2: 'Please enter a food name',
+        position: 'bottom'
+      });
+      return;
+    }
+
+    if (!imageUri) {
+      Toast.show({
+        type: 'error',
+        text1: 'Validation Error',
+        text2: 'Please add a food image',
+        position: 'bottom'
+      });
+      return;
+    }
+
+    if (ingredients.length === 0) {
+      Toast.show({
+        type: 'error',
+        text1: 'Validation Error',
+        text2: 'Please add at least one ingredient',
+        position: 'bottom'
+      });
+      return;
+    }
+
+    if (steps.length === 0) {
+      Toast.show({
+        type: 'error',
+        text1: 'Validation Error',
+        text2: 'Please add at least one cooking step',
+        position: 'bottom'
+      });
+      return;
+    }
+
+    if (isPaid && (!price || parseFloat(price) <= 0)) {
+      Toast.show({
+        type: 'error',
+        text1: 'Validation Error',
+        text2: 'Please enter a valid price',
+        position: 'bottom'
+      });
+      return;
+    }
+
+    setIsPublishing(true);
+
+    try {
+      // Get current user
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        Toast.show({
+          type: 'error',
+          text1: 'Authentication Error',
+          text2: 'Please log in to publish recipes',
+          position: 'bottom'
+        });
+        return;
+      }
+
+      // Update profile username if possible
+      if (user.email) {
+        const username = user.email.split('@')[0];
+        try {
+          await supabase.from('profiles').upsert({
+            id: user.id,
+            username: username,
+            updated_at: new Date().toISOString()
+          });
+        } catch (e) {
+          console.log('Error updating profile:', e);
+          // Continue publishing even if profile update fails
+        }
+      }
+
+      // Calculate average time from steps
+      const avgTime = Math.ceil(steps.reduce((sum, step) => sum + step.duration, 0) / 60);
+
+      // Create recipe
+      const recipe = await recipeService.createRecipe({
+        owner_id: user.id,
+        name: foodName,
+        image_url: imageUri,
+        price: isPaid ? parseFloat(price) : 0,
+        rating: 5.0,
+        avg_time: avgTime
+      });
+
+      if (!recipe) {
+        throw new Error('Failed to create recipe');
+      }
+
+      // Create/get ingredients and link to recipe
+      for (const ing of ingredients) {
+        // Check if ingredient exists
+        const allIngredients = await recipeService.getAllIngredients();
+        let ingredientId = allIngredients.find(i => i.name.toLowerCase() === ing.name.toLowerCase())?.ingredient_id;
+
+        // Create ingredient if it doesn't exist
+        if (!ingredientId) {
+          const newIngredient = await recipeService.createIngredient(ing.name);
+          ingredientId = newIngredient?.ingredient_id;
+        }
+
+        if (ingredientId) {
+          await recipeService.addIngredientToRecipe(
+            recipe.recipe_id,
+            ingredientId,
+            ing.amount,
+            ing.cup
+          );
+        }
+      }
+
+      // Create cooking steps
+      for (let i = 0; i < steps.length; i++) {
+        const step = steps[i];
+        const action = step.instruction === 'add ingredient' ? 'add_ingredient' :
+          step.instruction === 'stir' ? 'stir' : 'idle';
+
+        // Find the cup index for add ingredient steps
+        const targetCup = step.instruction === 'add ingredient' && step.ingredientName
+          ? ingredients.find(ing => ing.name.toLowerCase() === step.ingredientName?.toLowerCase())?.cup
+          : undefined;
+
+        await recipeService.addCookingStep(
+          recipe.recipe_id,
+          action,
+          step.duration,
+          i + 1,
+          targetCup
+        );
+      }
+
+      Toast.show({
+        type: 'success',
+        text1: 'Recipe Published!',
+        text2: `"${foodName}" has been shared`,
+        position: 'bottom'
+      });
+
+      // Reset form
+      setFoodName('');
+      setImageUri('');
+      setIngredients([]);
+      setSteps([]);
+      setIsPaid(false);
+      setPrice('');
+      setRecipeSuggestions([]);
+      setSelectedSuggestion(null);
+      setShowSuggestions(false);
+
+      // Navigate to recipes screen
+      setTimeout(() => {
+        router.push('/recipes'); // Navigate to Recipes list
+      }, 1000);
+
+    } catch (error) {
+      console.error('Error publishing recipe:', error);
+      Toast.show({
+        type: 'error',
+        text1: 'Publishing Failed',
+        text2: 'Please try again',
+        position: 'bottom'
+      });
+    } finally {
+      setIsPublishing(false);
+    }
   };
 
   return (
@@ -351,9 +544,14 @@ export default function CustomScreen() {
             <Pressable
               onPress={generateSuggestions}
               style={[styles.addBtnSmall, { backgroundColor: colors.primary }]}
+              disabled={isGenerating}
             >
-              <Ionicons name="sparkles" size={16} color="#fff" />
-              <Text style={styles.addBtnTextSmall}>Generate</Text>
+              {isGenerating ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="sparkles" size={16} color="#fff" />
+              )}
+              <Text style={styles.addBtnTextSmall}>{isGenerating ? 'Generating...' : 'Generate'}</Text>
             </Pressable>
           </View>
 
@@ -505,8 +703,16 @@ export default function CustomScreen() {
       )}
 
       {/* BUTTON */}
-      <Pressable style={styles.publishBtn}>
-        <Text style={styles.publishText}>Publish Recipe</Text>
+      <Pressable
+        style={[styles.publishBtn, isPublishing && { opacity: 0.6 }]}
+        onPress={publishRecipe}
+        disabled={isPublishing}
+      >
+        {isPublishing ? (
+          <ActivityIndicator size="small" color="#fff" />
+        ) : (
+          <Text style={styles.publishText}>Publish Recipe</Text>
+        )}
       </Pressable>
 
       <View style={{ height: 50 }} />
@@ -635,6 +841,17 @@ export default function CustomScreen() {
                     let finalIngredient = { ...editingIngredient };
                     if (finalIngredient.cup > 7) finalIngredient.cup = 7;
                     if (finalIngredient.cup < 1) finalIngredient.cup = 1;
+
+                    // Validation: Check if cup is already taken by another ingredient
+                    const cupOccupied = ingredients.some(i => i.cup === finalIngredient.cup && i.id !== finalIngredient.id);
+                    if (cupOccupied) {
+                      Toast.show({
+                        type: 'error',
+                        text1: 'Cup Occupied',
+                        text2: `Cup ${finalIngredient.cup} is already used by another ingredient`
+                      });
+                      return;
+                    }
 
                     if (ingredients.some(i => i.id === finalIngredient.id)) {
                       setIngredients(prev => prev.map(i => i.id === finalIngredient.id ? finalIngredient : i));

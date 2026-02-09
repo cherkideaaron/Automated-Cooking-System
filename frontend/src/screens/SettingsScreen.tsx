@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useEffect, useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -7,11 +8,16 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   View,
 } from 'react-native';
+import Toast from 'react-native-toast-message';
 
 import { usePayment } from '../context/PaymentContext';
 import { useTheme } from '../context/ThemeContext';
+import { recipeService } from '../services/recipeService';
+
+const GEMINI_API_KEY_STORAGE = '@gemini_api_key';
 
 export default function SettingsScreen() {
   const { payments } = usePayment();
@@ -19,6 +25,111 @@ export default function SettingsScreen() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [apiKey, setApiKey] = useState('');
+  const [apiKeyInput, setApiKeyInput] = useState('');
+
+  const [username, setUsername] = useState('');
+  const [userEmail, setUserEmail] = useState('');
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [incomingRequests, setIncomingRequests] = useState<any[]>([]);
+
+  // Load API key on mount
+  useEffect(() => {
+    loadApiKey();
+    loadProfile();
+    loadIncomingRequests();
+  }, []);
+
+  const loadProfile = async () => {
+    const profile = await recipeService.getUserProfile();
+    if (profile) {
+      setUsername(profile.username || '');
+      setUserEmail(profile.email || '');
+    }
+  };
+
+  const loadIncomingRequests = async () => {
+    const reqs = await recipeService.getIncomingPurchaseRequests();
+    setIncomingRequests(reqs);
+  };
+
+  const loadApiKey = async () => {
+    try {
+      const savedKey = await AsyncStorage.getItem(GEMINI_API_KEY_STORAGE);
+      if (savedKey) {
+        setApiKey(savedKey);
+        setApiKeyInput(savedKey);
+      }
+    } catch (error) {
+      console.error('Error loading API key:', error);
+    }
+  };
+
+  const saveApiKey = async () => {
+    try {
+      if (apiKeyInput.trim()) {
+        await AsyncStorage.setItem(GEMINI_API_KEY_STORAGE, apiKeyInput.trim());
+        setApiKey(apiKeyInput.trim());
+        Toast.show({
+          type: 'success',
+          text1: 'API Key Saved',
+          text2: 'Your Gemini API key has been saved',
+          position: 'bottom'
+        });
+      } else {
+        await AsyncStorage.removeItem(GEMINI_API_KEY_STORAGE);
+        setApiKey('');
+        Toast.show({
+          type: 'success',
+          text1: 'API Key Removed',
+          position: 'bottom'
+        });
+      }
+      setShowApiKeyModal(false);
+    } catch (error) {
+      console.error('Error saving API key:', error);
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Failed to save API key',
+        position: 'bottom'
+      });
+    }
+  };
+
+  const handleSaveProfile = async () => {
+    const success = await recipeService.updateProfile(username);
+    if (success) {
+      setIsEditingProfile(false);
+      Toast.show({
+        type: 'success',
+        text1: 'Profile Updated'
+      });
+    } else {
+      Toast.show({
+        type: 'error',
+        text1: 'Update Failed'
+      });
+    }
+  };
+
+  const handleApproveRequest = async (buyerId: string, recipeId: string) => {
+    const success = await recipeService.approvePurchaseRequest(buyerId, recipeId);
+    if (success) {
+      Toast.show({
+        type: 'success',
+        text1: 'Request Approved'
+      });
+      // Refresh list
+      loadIncomingRequests();
+    } else {
+      Toast.show({
+        type: 'error',
+        text1: 'Approval Failed'
+      });
+    }
+  };
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.background }]} showsVerticalScrollIndicator={false}>
@@ -28,10 +139,29 @@ export default function SettingsScreen() {
       <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Account</Text>
       <View style={[styles.card, { backgroundColor: colors.card }]}>
         <Text style={[styles.label, { color: colors.textSecondary }]}>Email</Text>
-        <Text style={[styles.value, { color: colors.text }]}>user@example.com</Text>
+        <Text style={[styles.value, { color: colors.text }]}>{userEmail}</Text>
 
         <Text style={[styles.label, { marginTop: 12, color: colors.textSecondary }]}>Username</Text>
-        <Text style={[styles.value, { color: colors.text }]}>Chef Master</Text>
+
+        {isEditingProfile ? (
+          <View style={styles.editRow}>
+            <TextInput
+              style={[styles.editInput, { color: colors.text, borderColor: colors.border }]}
+              value={username}
+              onChangeText={setUsername}
+            />
+            <Pressable onPress={handleSaveProfile} style={styles.saveIconBtn}>
+              <Ionicons name="checkmark-circle" size={24} color={colors.success} />
+            </Pressable>
+          </View>
+        ) : (
+          <View style={styles.rowBetween}>
+            <Text style={[styles.value, { color: colors.text }]}>{username}</Text>
+            <Pressable onPress={() => setIsEditingProfile(true)}>
+              <Ionicons name="pencil" size={16} color={colors.primary} />
+            </Pressable>
+          </View>
+        )}
 
         <Pressable
           style={styles.rowBtn}
@@ -72,6 +202,60 @@ export default function SettingsScreen() {
             trackColor={{ true: colors.primary, false: '#333' }}
           />
         </View>
+      </View>
+
+      {/* INCOMING REQUESTS (For Sellers) */}
+      <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Incoming Purchase Requests</Text>
+      {incomingRequests.length === 0 ? (
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
+          <Text style={[styles.muted, { color: colors.textSecondary }]}>No pending requests</Text>
+        </View>
+      ) : (
+        incomingRequests.map((req) => (
+          <View key={req.id} style={[styles.card, { backgroundColor: colors.card, marginBottom: 10 }]}>
+            <View style={styles.rowBetween}>
+              <View>
+                <Text style={[styles.value, { color: colors.text }]}>{req.recipes?.name}</Text>
+                <Text style={[styles.muted, { color: colors.textSecondary }]}>Buyer: {req.buyer?.username || 'Unknown'}</Text>
+                <Text style={[styles.muted, { color: colors.textSecondary }]}>Phone: {req.phone_number}</Text>
+              </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={[styles.value, { color: colors.primary }]}>${req.amount_paid}</Text>
+                {req.status === 'pending' ? (
+                  <Pressable
+                    style={[styles.smallBtn, { backgroundColor: colors.success }]}
+                    onPress={() => handleApproveRequest(req.buyer_id, req.recipe_id)}
+                  >
+                    <Text style={styles.smallBtnText}>Approve</Text>
+                  </Pressable>
+                ) : (
+                  <Text style={{ color: colors.success, fontSize: 12, fontWeight: '700' }}>Approved</Text>
+                )}
+              </View>
+            </View>
+          </View>
+        ))
+      )}
+
+      {/* AI INTEGRATION */}
+      <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>AI Integration</Text>
+      <View style={[styles.card, { backgroundColor: colors.card }]}>
+        <Pressable
+          style={styles.rowBtn}
+          onPress={() => {
+            setApiKeyInput(apiKey);
+            setShowApiKeyModal(true);
+          }}
+        >
+          <Ionicons name="key" size={18} color={colors.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.rowText, { color: colors.text }]}>Gemini API Key</Text>
+            <Text style={[styles.muted, { marginTop: 4 }]}>
+              {apiKey ? '••••••••••••' + apiKey.slice(-4) : 'Not configured'}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+        </Pressable>
       </View>
 
       {/* PAYMENTS */}
@@ -162,6 +346,49 @@ export default function SettingsScreen() {
                 onPress={() => setShowDeleteModal(false)}
               >
                 <Text style={styles.modalBtnText}>Delete</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* API KEY MODAL */}
+      <Modal transparent visible={showApiKeyModal} animationType="fade">
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modal, { backgroundColor: colors.card }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Gemini API Key</Text>
+
+            <Text style={[styles.modalText, { color: colors.textSecondary }]}>
+              Enter your Gemini API key to enable AI-powered recipe generation.
+            </Text>
+
+            <TextInput
+              style={[styles.apiKeyInput, { backgroundColor: colors.inputBackground, color: colors.text, borderColor: colors.border }]}
+              value={apiKeyInput}
+              onChangeText={setApiKeyInput}
+              placeholder="Enter your Gemini API key"
+              placeholderTextColor={colors.textSecondary}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+
+            <View style={{ flexDirection: 'row', gap: 12 }}>
+              <Pressable
+                style={[styles.modalBtn, { backgroundColor: colors.border }]}
+                onPress={() => {
+                  setShowApiKeyModal(false);
+                  setApiKeyInput(apiKey);
+                }}
+              >
+                <Text style={styles.modalBtnText}>Cancel</Text>
+              </Pressable>
+
+              <Pressable
+                style={[styles.modalBtn, { backgroundColor: colors.primary }]}
+                onPress={saveApiKey}
+              >
+                <Text style={styles.modalBtnText}>Save</Text>
               </Pressable>
             </View>
           </View>
@@ -313,4 +540,37 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
   },
+
+  apiKeyInput: {
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    marginBottom: 16,
+    fontSize: 14,
+  },
+  editInput: {
+    flex: 1,
+    fontSize: 14,
+    borderBottomWidth: 1,
+    paddingVertical: 4
+  },
+  editRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10
+  },
+  saveIconBtn: {
+    padding: 4
+  },
+  smallBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    marginTop: 4
+  },
+  smallBtnText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '700'
+  }
 });

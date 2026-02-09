@@ -16,6 +16,7 @@ import Toast from 'react-native-toast-message';
 import { useTheme } from '../context/ThemeContext';
 import { supabase } from '../lib/supabase';
 import { recipeService, RecipeWithDetails } from '../services/recipeService';
+import * as ImagePicker from 'expo-image-picker';
 
 interface Step {
   id: number;
@@ -63,6 +64,15 @@ export default function RecipesScreen() {
   const [steps, setSteps] = useState<Step[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
 
+  const [purchasedRecipeIds, setPurchasedRecipeIds] = useState<string[]>([]);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
+  // Purchase State
+  const [showPurchaseModal, setShowPurchaseModal] = useState(false);
+  const [purchaseName, setPurchaseName] = useState('');
+  const [purchasePhone, setPurchasePhone] = useState('');
+  const [purchaseReceipt, setPurchaseReceipt] = useState<string | null>(null);
+
   const [editingStep, setEditingStep] = useState<Step | null>(null);
   const [editingIngredient, setEditingIngredient] = useState<Ingredient | null>(null);
   const [showConfirmCooking, setShowConfirmCooking] = useState(false);
@@ -73,8 +83,18 @@ export default function RecipesScreen() {
 
   // Fetch recipes from database on mount
   useEffect(() => {
+    checkUser();
     loadRecipes();
   }, []);
+
+  const checkUser = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    setCurrentUser(user);
+    if (user) {
+      const ids = await recipeService.getPurchasedRecipeIds();
+      setPurchasedRecipeIds(ids);
+    }
+  };
 
   const loadRecipes = async () => {
     setLoading(true);
@@ -98,6 +118,16 @@ export default function RecipesScreen() {
       setSearchQuery(params.search as string);
     }
   }, [params.search]);
+
+  // Handle auto-open via params
+  useEffect(() => {
+    if (params.recipeId && recipes.length > 0) {
+      const target = recipes.find(r => r.recipe_id === params.recipeId);
+      if (target) {
+        setSelectedRecipe(target);
+      }
+    }
+  }, [params.recipeId, recipes]);
 
   useEffect(() => {
     if (selectedRecipe) {
@@ -198,12 +228,144 @@ export default function RecipesScreen() {
     );
   }, [searchQuery, recipes]);
 
+  const maxLengthCreatorCheck = (ownerId: string) => {
+    return currentUser && currentUser.id === ownerId;
+  }
+
+  const handlePurchaseConfirm = async () => {
+    if (!purchaseName || !purchasePhone) {
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Please fill in all fields'
+      });
+      return;
+    }
+
+    if (!selectedRecipe) return;
+
+    try {
+      const receiptUrl = purchaseReceipt || 'https://placeholder.com/receipt.jpg';
+
+      const success = await recipeService.createPurchaseRequest(
+        selectedRecipe.recipe_id,
+        selectedRecipe.price || 0,
+        purchasePhone,
+        receiptUrl
+      );
+
+      if (success) {
+        Toast.show({
+          type: 'success',
+          text1: 'Purchase Request Sent',
+          text2: 'The chef will review your receipt shortly.'
+        });
+
+        setPurchaseName('');
+        setPurchasePhone('');
+        setPurchaseReceipt(null);
+        setShowPurchaseModal(false);
+      } else {
+        Toast.show({
+          type: 'error',
+          text1: 'Purchase Failed',
+          text2: 'Could not submit purchase request.'
+        });
+      }
+
+    } catch (error) {
+      console.error('Purchase error:', error);
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'An unexpected error occurred.'
+      });
+    }
+  };
+
+  const pickImage = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 1,
+    });
+
+    if (!result.canceled) {
+      setPurchaseReceipt(result.assets[0].uri);
+    }
+  };
+
+  /* =========================
+     RECIPE DETAILS VIEW
+  ========================== */
   /* =========================
      RECIPE DETAILS VIEW
   ========================== */
   if (selectedRecipe) {
+    const isFree = !selectedRecipe.price || selectedRecipe.price === 0;
+    const isOwnedByMe = maxLengthCreatorCheck(selectedRecipe.owner_id);
+    const isPurchased = purchasedRecipeIds.includes(selectedRecipe.recipe_id);
+    const hasAccess = isFree || isOwnedByMe || isPurchased;
+
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <Modal
+          visible={showPurchaseModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowPurchaseModal(false)}
+        >
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', padding: 20 }}>
+            <View style={{ backgroundColor: colors.card, padding: 20, borderRadius: 16 }}>
+              <Text style={{ color: colors.text, fontSize: 20, fontWeight: '700', marginBottom: 16 }}>
+                Buy Recipe
+              </Text>
+              <Text style={{ color: colors.textSecondary, marginBottom: 20 }}>
+                Send a receipt to unlock this recipe.
+              </Text>
+
+              <TextInput
+                style={{ backgroundColor: colors.background, color: colors.text, padding: 12, borderRadius: 8, marginBottom: 12 }}
+                placeholder="Your Name"
+                placeholderTextColor="#666"
+                value={purchaseName}
+                onChangeText={setPurchaseName}
+              />
+              <TextInput
+                style={{ backgroundColor: colors.background, color: colors.text, padding: 12, borderRadius: 8, marginBottom: 12 }}
+                placeholder="Phone Number"
+                placeholderTextColor="#666"
+                value={purchasePhone}
+                onChangeText={setPurchasePhone}
+                keyboardType="phone-pad"
+              />
+
+              <Pressable
+                onPress={pickImage}
+                style={{ backgroundColor: colors.background, padding: 20, borderRadius: 8, alignItems: 'center', marginBottom: 20, borderStyle: 'dashed', borderWidth: 1, borderColor: colors.border }}
+              >
+                {purchaseReceipt ? (
+                  <Image source={{ uri: purchaseReceipt }} style={{ width: 100, height: 100, borderRadius: 8 }} />
+                ) : (
+                  <>
+                    <Ionicons name="cloud-upload" size={32} color={colors.primary} />
+                    <Text style={{ color: colors.textSecondary, marginTop: 8 }}>Upload Receipt</Text>
+                  </>
+                )}
+              </Pressable>
+
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <Pressable onPress={() => setShowPurchaseModal(false)} style={{ flex: 1, padding: 12, backgroundColor: colors.border, borderRadius: 8, alignItems: 'center' }}>
+                  <Text style={{ color: colors.text }}>Cancel</Text>
+                </Pressable>
+                <Pressable onPress={handlePurchaseConfirm} style={{ flex: 1, padding: 12, backgroundColor: colors.primary, borderRadius: 8, alignItems: 'center' }}>
+                  <Text style={{ color: '#fff', fontWeight: 'bold' }}>Submit</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
         <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
           {/* HEADER */}
           <View style={styles.detailsHeader}>
@@ -228,111 +390,142 @@ export default function RecipesScreen() {
             </View>
 
             <View style={[styles.infoCard, { backgroundColor: colors.card }]}>
-              <Ionicons name="restaurant" size={18} color="#E53935" />
-              <Text style={[styles.infoText, { color: colors.text }]}>Recipe</Text>
-            </View>
-          </View>
-
-          {/* SERVINGS SECTION */}
-          <View style={styles.servingsContainer}>
-            <Text style={[styles.sectionTitle, { color: colors.text, flex: 1 }]}>Servings</Text>
-            <View style={styles.servingsPicker}>
-              <Pressable
-                onPress={() => setServings(Math.max(1, servings - 1))}
-                style={[styles.servingBtn, { backgroundColor: colors.card }]}
-              >
-                <Ionicons name="remove" size={20} color={colors.text} />
-              </Pressable>
-              <Text style={[styles.servingValue, { color: colors.text }]}>{servings}</Text>
-              <Pressable
-                onPress={() => setServings(servings + 1)}
-                style={[styles.servingBtn, { backgroundColor: colors.card }]}
-              >
-                <Ionicons name="add" size={20} color={colors.text} />
-              </Pressable>
-            </View>
-          </View>
-
-          {/* STEPS */}
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Cooking Steps</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-              <Pressable
-                onPress={() => setEditingStep({ id: Date.now(), instruction: 'idle', duration: 0, temperature: 25, stirrerSpeed: 0 })}
-                style={[styles.addBtnSmall, { backgroundColor: colors.primary }]}
-              >
-                <Ionicons name="add" size={16} color="#fff" />
-                <Text style={styles.addBtnTextSmall}>Add Step</Text>
-              </Pressable>
-              <Text style={{ color: colors.textSecondary, fontSize: 12 }}>(Click to edit)</Text>
-            </View>
-          </View>
-
-          {scaledSteps.map((step, index) => (
-            <Pressable
-              key={step.id}
-              onPress={() => setEditingStep(steps.find(s => s.id === step.id) || null)}
-              style={[styles.stepCard, { backgroundColor: colors.card }]}
-            >
-              <View style={styles.stepHeader}>
-                <Text style={[styles.stepTitle, { color: colors.text }]}>
-                  Step {index + 1}: {step.instruction === 'add ingredient' ? `Add ${step.ingredientName}` : step.instruction}
-                </Text>
-                <Ionicons name="create-outline" size={16} color={colors.textSecondary} />
-              </View>
-              <Text style={[styles.stepSub, { color: colors.textSecondary }]}>
-                Time: {formatTime(step.duration)} · {step.temperature}°C
+              <Ionicons name="pricetag" size={18} color="#4CAF50" />
+              <Text style={[styles.infoText, { color: colors.text }]}>
+                {selectedRecipe.price ? `$${selectedRecipe.price}` : 'Free'}
               </Text>
-              {step.currentIngredient && (
-                <Text style={[styles.stepSub, { color: colors.text, fontWeight: '600', marginTop: 8 }]}>
-                  {step.currentIngredient.name}: {step.currentIngredient.amount}{step.currentIngredient.unit}
-                </Text>
-              )}
-            </Pressable>
-          ))}
-
-          {/* INGREDIENTS */}
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Ingredients</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-              <Pressable
-                onPress={() => setEditingIngredient({ id: Date.now(), name: '', amount: 0, unit: 'g', cup: 1 })}
-                style={[styles.addBtnSmall, { backgroundColor: colors.primary }]}
-              >
-                <Ionicons name="add" size={16} color="#fff" />
-                <Text style={styles.addBtnTextSmall}>Add Ingredient</Text>
-              </Pressable>
-              <Text style={{ color: colors.textSecondary, fontSize: 12 }}>(Click to edit)</Text>
             </View>
           </View>
 
-          {scaledIngredients.map((ing) => (
-            <Pressable
-              key={ing.id}
-              onPress={() => setEditingIngredient(ingredients.find(i => i.id === ing.id) || null)}
-              style={[styles.ingredientCard, { backgroundColor: colors.card }]}
-            >
-              <View style={styles.ingredientRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.ingredientText, { color: colors.text, fontWeight: '700' }]}>
-                    {ing.name}
-                  </Text>
-                  <Text style={[styles.ingredientSub, { color: colors.textSecondary }]}>
-                    Cup {ing.cup} · {ing.amount}{ing.unit}
-                  </Text>
-                </View>
-                <Ionicons name="create-outline" size={16} color={colors.textSecondary} />
-              </View>
-            </Pressable>
-          ))}
+          {!hasAccess ? (
+            <View style={{ padding: 20, alignItems: 'center' }}>
+              <Ionicons name="lock-closed" size={48} color={colors.textSecondary} style={{ marginBottom: 16 }} />
+              <Text style={{ color: colors.text, fontSize: 18, fontWeight: '700', marginBottom: 8 }}>
+                This recipe is locked
+              </Text>
+              <Text style={{ color: colors.textSecondary, textAlign: 'center', marginBottom: 24 }}>
+                Purchase this premium recipe for ${selectedRecipe.price} to view steps and ingredients.
+              </Text>
+              <Pressable
+                style={{ backgroundColor: '#FFD700', paddingHorizontal: 32, paddingVertical: 14, borderRadius: 30 }}
+                onPress={() => setShowPurchaseModal(true)}
+              >
+                <Text style={{ color: '#000', fontWeight: '700', fontSize: 16 }}>
+                  Buy Recipe (${selectedRecipe.price})
+                </Text>
+              </Pressable>
 
-          {/* START COOKING */}
-          <Pressable
-            style={styles.startBtn}
-            onPress={handleStartCooking}
-          >
-            <Text style={styles.startText}>Start Cooking</Text>
-          </Pressable>
+              <View style={{ marginTop: 32, width: '100%' }}>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>Description</Text>
+                <Text style={{ color: colors.textSecondary, lineHeight: 22 }}>
+                  {selectedRecipe.description || "A premium recipe."}
+                </Text>
+              </View>
+            </View>
+          ) : (
+            <>
+              {/* SERVINGS SECTION */}
+              <View style={styles.servingsContainer}>
+                <Text style={[styles.sectionTitle, { color: colors.text, flex: 1 }]}>Servings</Text>
+                <View style={styles.servingsPicker}>
+                  <Pressable
+                    onPress={() => setServings(Math.max(1, servings - 1))}
+                    style={[styles.servingBtn, { backgroundColor: colors.card }]}
+                  >
+                    <Ionicons name="remove" size={20} color={colors.text} />
+                  </Pressable>
+                  <Text style={[styles.servingValue, { color: colors.text }]}>{servings}</Text>
+                  <Pressable
+                    onPress={() => setServings(servings + 1)}
+                    style={[styles.servingBtn, { backgroundColor: colors.card }]}
+                  >
+                    <Ionicons name="add" size={20} color={colors.text} />
+                  </Pressable>
+                </View>
+              </View>
+
+              {/* STEPS */}
+              <View style={styles.sectionHeader}>
+                <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Cooking Steps</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                  <Pressable
+                    onPress={() => setEditingStep({ id: Date.now(), instruction: 'idle', duration: 0, temperature: 25, stirrerSpeed: 0 })}
+                    style={[styles.addBtnSmall, { backgroundColor: colors.primary }]}
+                  >
+                    <Ionicons name="add" size={16} color="#fff" />
+                    <Text style={styles.addBtnTextSmall}>Add Step</Text>
+                  </Pressable>
+                  <Text style={{ color: colors.textSecondary, fontSize: 12 }}>(Click to edit)</Text>
+                </View>
+              </View>
+
+              {scaledSteps.map((step, index) => (
+                <Pressable
+                  key={step.id}
+                  onPress={() => setEditingStep(steps.find(s => s.id === step.id) || null)}
+                  style={[styles.stepCard, { backgroundColor: colors.card }]}
+                >
+                  <View style={styles.stepHeader}>
+                    <Text style={[styles.stepTitle, { color: colors.text }]}>
+                      Step {index + 1}: {step.instruction === 'add ingredient' ? `Add ${step.ingredientName}` : step.instruction}
+                    </Text>
+                    <Ionicons name="create-outline" size={16} color={colors.textSecondary} />
+                  </View>
+                  <Text style={[styles.stepSub, { color: colors.textSecondary }]}>
+                    Time: {formatTime(step.duration)} · {step.temperature}°C
+                  </Text>
+                  {step.currentIngredient && (
+                    <Text style={[styles.stepSub, { color: colors.text, fontWeight: '600', marginTop: 8 }]}>
+                      {step.currentIngredient.name}: {step.currentIngredient.amount}{step.currentIngredient.unit}
+                    </Text>
+                  )}
+                </Pressable>
+              ))}
+
+              {/* INGREDIENTS */}
+              <View style={styles.sectionHeader}>
+                <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Ingredients</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                  <Pressable
+                    onPress={() => setEditingIngredient({ id: Date.now(), name: '', amount: 0, unit: 'g', cup: 1 })}
+                    style={[styles.addBtnSmall, { backgroundColor: colors.primary }]}
+                  >
+                    <Ionicons name="add" size={16} color="#fff" />
+                    <Text style={styles.addBtnTextSmall}>Add Ingredient</Text>
+                  </Pressable>
+                  <Text style={{ color: colors.textSecondary, fontSize: 12 }}>(Click to edit)</Text>
+                </View>
+              </View>
+
+              {scaledIngredients.map((ing) => (
+                <Pressable
+                  key={ing.id}
+                  onPress={() => setEditingIngredient(ingredients.find(i => i.id === ing.id) || null)}
+                  style={[styles.ingredientCard, { backgroundColor: colors.card }]}
+                >
+                  <View style={styles.ingredientRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.ingredientText, { color: colors.text, fontWeight: '700' }]}>
+                        {ing.name}
+                      </Text>
+                      <Text style={[styles.ingredientSub, { color: colors.textSecondary }]}>
+                        Cup {ing.cup} · {ing.amount}{ing.unit}
+                      </Text>
+                    </View>
+                    <Ionicons name="create-outline" size={16} color={colors.textSecondary} />
+                  </View>
+                </Pressable>
+              ))}
+
+              {/* START COOKING */}
+              <Pressable
+                style={styles.startBtn}
+                onPress={handleStartCooking}
+              >
+                <Text style={styles.startText}>Start Cooking</Text>
+              </Pressable>
+            </>
+          )}
         </ScrollView>
 
         {/* STEP EDITOR MODAL */}
@@ -861,6 +1054,9 @@ export default function RecipesScreen() {
               <View style={styles.metaRow}>
                 <Text style={[styles.metaText, { color: colors.textSecondary }]}>⏱ {recipe.avg_time} min</Text>
                 <Text style={[styles.metaText, { color: colors.textSecondary }]}>⭐ {recipe.rating}</Text>
+                <Text style={[styles.metaText, { color: recipe.price ? colors.primary : '#4CAF50', fontWeight: 'bold' }]}>
+                  {recipe.price ? `$${recipe.price}` : 'Free'}
+                </Text>
               </View>
             </View>
           </Pressable>

@@ -21,32 +21,51 @@ import { usePayment } from '../context/PaymentContext';
 import { useTheme } from '../context/ThemeContext';
 import { supabase } from '../lib/supabase';
 import { Database } from '../types/database.types';
+import { recipeService, RecipeWithDetails } from '../services/recipeService';
 
 type FilterType = 'all' | 'budget' | 'moderate' | 'premium';
 type RatingFilter = 'all' | '3+' | '4+';
 type TimeFilter = 'all' | '<15' | '15-30' | '30+';
 
-// Mock recipe data - stable outside component
-const othersRecipes = [
-    { id: '1', name: 'Spicy Thai Curry', rating: 4.8, time: 25, price: '$$', emoji: '🍛', color1: '#FF6B6B', color2: '#FF8E53' },
-    { id: '2', name: 'Italian Risotto', rating: 4.9, time: 30, price: '$$$', emoji: '🍚', color1: '#4ECDC4', color2: '#44A08D' },
-    { id: '3', name: 'Beef Tacos', rating: 4.6, time: 20, price: '$', emoji: '🌮', color1: '#F7971E', color2: '#FFD200' },
-    { id: '4', name: 'Salmon Teriyaki', rating: 4.7, time: 22, price: '$$', emoji: '🍱', color1: '#667EEA', color2: '#764BA2' },
+// Recipe colors for gradient backgrounds
+const recipeColors = [
+    { color1: '#FF6B6B', color2: '#FF8E53' },
+    { color1: '#4ECDC4', color2: '#44A08D' },
+    { color1: '#F7971E', color2: '#FFD200' },
+    { color1: '#667EEA', color2: '#764BA2' },
+    { color1: '#F093FB', color2: '#F5576C' },
+    { color1: '#4FACFE', color2: '#00F2FE' },
+    { color1: '#FA709A', color2: '#FEE140' },
+    { color1: '#30CFD0', color2: '#330867' },
 ];
 
-const recommendedRecipes = [
-    { id: '5', name: 'Chicken Alfredo', rating: 4.9, time: 28, price: '$$', emoji: '🍝', color1: '#F093FB', color2: '#F5576C' },
-    { id: '6', name: 'Veggie Stir Fry', rating: 4.5, time: 15, price: '$', emoji: '🥗', color1: '#4FACFE', color2: '#00F2FE' },
-    { id: '7', name: 'BBQ Ribs', rating: 4.8, time: 45, price: '$$$', emoji: '🍖', color1: '#FA709A', color2: '#FEE140' },
-    { id: '8', name: 'Mushroom Soup', rating: 4.4, time: 18, price: '$', emoji: '🍲', color1: '#30CFD0', color2: '#330867' },
-];
+// Dummy data for featured sections
+// Dummy data for featured sections
+const TRENDING_RECIPE: RecipeWithDetails = {
+    recipe_id: 'trending-1',
+    owner_id: 'featured',
+    name: 'Spicy Thai Basil Chicken',
+    image_url: 'https://images.unsplash.com/photo-1596797038530-2c107229654b?auto=format&fit=crop&q=80',
+    price: 8,
+    rating: 4.9,
+    avg_time: 25,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    profiles: { username: 'Chef Ming', id: 'chef-ming', avatar_url: null, total_cooks: 2500, created_at: '', updated_at: '' }
+};
 
-const trendingRecipes = [
-    { id: '9', name: 'Pad Thai', rating: 4.9, time: 23, price: '$$', emoji: '🍜', color1: '#FF9A56', color2: '#FF6A88' },
-    { id: '10', name: 'Greek Salad', rating: 4.6, time: 10, price: '$', emoji: '🥙', color1: '#A8EDEA', color2: '#FED6E3' },
-    { id: '11', name: 'Lamb Chops', rating: 4.7, time: 35, price: '$$$', emoji: '🥩', color1: '#FF6B95', color2: '#FFC796' },
-    { id: '12', name: 'Sushi Bowl', rating: 4.8, time: 20, price: '$$', emoji: '🍣', color1: '#89F7FE', color2: '#66A6FF' },
-];
+const RECOMMENDED_RECIPE: RecipeWithDetails = {
+    recipe_id: 'recommended-1',
+    owner_id: 'featured',
+    name: 'Creamy Mushroom Risotto',
+    image_url: 'https://images.unsplash.com/photo-1484723091739-30a097e8f929?w=800&q=80',
+    price: 0,
+    rating: 4.8,
+    avg_time: 35,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    profiles: { username: 'Chef Isabella', id: 'chef-isabella', avatar_url: null, total_cooks: 1800, created_at: '', updated_at: '' }
+};
 
 export default function DashboardHomeScreen() {
     const { colors } = useTheme();
@@ -87,6 +106,36 @@ export default function DashboardHomeScreen() {
     const [totalStepsCount, setTotalStepsCount] = useState(0);
     const [cookingProgress, setCookingProgress] = useState(0);
     const [remainingTime, setRemainingTime] = useState(0);
+
+    // Real recipe data from database
+    const [othersRecipes, setOthersRecipes] = useState<RecipeWithDetails[]>([]);
+    const [loadingRecipes, setLoadingRecipes] = useState(true);
+    const [purchasedRecipeIds, setPurchasedRecipeIds] = useState<string[]>([]);
+    const [currentUser, setCurrentUser] = useState<any>(null);
+
+    // Load recipes from database
+    useEffect(() => {
+        loadRecipes();
+    }, []);
+
+    const loadRecipes = async () => {
+        setLoadingRecipes(true);
+        try {
+            const recipes = await recipeService.getAllRecipes();
+            setOthersRecipes(recipes);
+
+            const user = await supabase.auth.getUser();
+            if (user.data.user) {
+                setCurrentUser(user.data.user);
+                const purchasedIds = await recipeService.getPurchasedRecipeIds();
+                setPurchasedRecipeIds(purchasedIds);
+            }
+        } catch (error) {
+            console.error('Error loading recipes:', error);
+        } finally {
+            setLoadingRecipes(false);
+        }
+    };
 
     // Subscribe to device_state
     useEffect(() => {
@@ -241,69 +290,34 @@ export default function DashboardHomeScreen() {
     // Filter recipes based on selected filters
     const filteredOthersRecipes = useMemo(() => {
         return othersRecipes.filter(recipe => {
+            // Price filter
             if (priceFilter !== 'all') {
-                const priceMap = { budget: '$', moderate: '$$', premium: '$$$' };
-                if (recipe.price !== priceMap[priceFilter as keyof typeof priceMap]) return false;
+                const recipePrice = recipe.price || 0;
+                if (priceFilter === 'budget' && recipePrice > 5) return false;
+                if (priceFilter === 'moderate' && (recipePrice <= 5 || recipePrice > 15)) return false;
+                if (priceFilter === 'premium' && recipePrice <= 15) return false;
             }
+            // Rating filter
             if (ratingFilter !== 'all') {
                 const minRating = ratingFilter === '3+' ? 3 : 4;
-                if (recipe.rating < minRating) return false;
+                if ((recipe.rating || 0) < minRating) return false;
             }
+            // Time filter  
             if (timeFilter !== 'all') {
-                if (timeFilter === '<15' && recipe.time >= 15) return false;
-                if (timeFilter === '15-30' && (recipe.time < 15 || recipe.time > 30)) return false;
-                if (timeFilter === '30+' && recipe.time < 30) return false;
+                const time = recipe.avg_time || 0;
+                if (timeFilter === '<15' && time >= 15) return false;
+                if (timeFilter === '15-30' && (time < 15 || time > 30)) return false;
+                if (timeFilter === '30+' && time < 30) return false;
             }
+            // Search filter
             if (discoverSearch && !recipe.name.toLowerCase().includes(discoverSearch.toLowerCase())) {
                 return false;
             }
             return true;
         });
-    }, [discoverSearch, priceFilter, ratingFilter, timeFilter]);
+    }, [discoverSearch, priceFilter, ratingFilter, timeFilter, othersRecipes]);
 
-    const filteredRecommendedRecipes = useMemo(() => {
-        return recommendedRecipes.filter(recipe => {
-            if (priceFilter !== 'all') {
-                const priceMap = { budget: '$', moderate: '$$', premium: '$$$' };
-                if (recipe.price !== priceMap[priceFilter as keyof typeof priceMap]) return false;
-            }
-            if (ratingFilter !== 'all') {
-                const minRating = ratingFilter === '3+' ? 3 : 4;
-                if (recipe.rating < minRating) return false;
-            }
-            if (timeFilter !== 'all') {
-                if (timeFilter === '<15' && recipe.time >= 15) return false;
-                if (timeFilter === '15-30' && (recipe.time < 15 || recipe.time > 30)) return false;
-                if (timeFilter === '30+' && recipe.time < 30) return false;
-            }
-            if (discoverSearch && !recipe.name.toLowerCase().includes(discoverSearch.toLowerCase())) {
-                return false;
-            }
-            return true;
-        });
-    }, [discoverSearch, priceFilter, ratingFilter, timeFilter]);
 
-    const filteredTrendingRecipes = useMemo(() => {
-        return trendingRecipes.filter(recipe => {
-            if (priceFilter !== 'all') {
-                const priceMap = { budget: '$', moderate: '$$', premium: '$$$' };
-                if (recipe.price !== priceMap[priceFilter as keyof typeof priceMap]) return false;
-            }
-            if (ratingFilter !== 'all') {
-                const minRating = ratingFilter === '3+' ? 3 : 4;
-                if (recipe.rating < minRating) return false;
-            }
-            if (timeFilter !== 'all') {
-                if (timeFilter === '<15' && recipe.time >= 15) return false;
-                if (timeFilter === '15-30' && (recipe.time < 15 || recipe.time > 30)) return false;
-                if (timeFilter === '30+' && recipe.time < 30) return false;
-            }
-            if (discoverSearch && !recipe.name.toLowerCase().includes(discoverSearch.toLowerCase())) {
-                return false;
-            }
-            return true;
-        });
-    }, [discoverSearch, priceFilter, ratingFilter, timeFilter]);
 
     // Format time in MM:SS
     const formatTime = (seconds: number) => {
@@ -380,36 +394,62 @@ export default function DashboardHomeScreen() {
         setPendingAction(null);
     };
 
-    const renderRecipeCard = (recipe: any, isGridView: boolean = false) => (
-        <TouchableOpacity
-            key={recipe.id}
-            style={[styles.recipeCard, { backgroundColor: colors.card }, isGridView && styles.recipeCardGrid]}
-            onPress={() => setSelectedRecipe(recipe)}
-        >
-            <LinearGradient
-                colors={[recipe.color1, recipe.color2]}
-                style={styles.recipeImageGradient}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
+    const renderRecipeCard = (recipe: RecipeWithDetails, index: number, isGridView: boolean = false) => {
+        const colorScheme = recipeColors[index % recipeColors.length];
+        const isFree = !recipe.price || recipe.price === 0;
+        const isOwnedByMe = currentUser && currentUser.id === recipe.owner_id;
+        const isPurchased = purchasedRecipeIds.includes(recipe.recipe_id);
+        const hasAccess = isFree || isOwnedByMe || isPurchased;
+
+        return (
+            <TouchableOpacity
+                key={recipe.recipe_id}
+                style={[styles.recipeCard, { backgroundColor: colors.card }, isGridView && styles.recipeCardGrid]}
+                onPress={() => setSelectedRecipe(recipe)}
             >
-                <Text style={styles.recipeEmoji}>{recipe.emoji}</Text>
-            </LinearGradient>
-            <View style={styles.recipeDetails}>
-                <Text style={[styles.recipeName, { color: colors.text }]} numberOfLines={1}>{recipe.name}</Text>
-                <View style={styles.recipeMetaRow}>
-                    <View style={styles.recipeMetaItem}>
-                        <Ionicons name="star" size={12} color="#FFD700" />
-                        <Text style={[styles.recipeMetaText, { color: colors.textSecondary }]}>{recipe.rating}</Text>
+                {recipe.image_url ? (
+                    <Image
+                        source={{ uri: recipe.image_url }}
+                        style={styles.recipeImageGradient}
+                        resizeMode="cover"
+                    />
+                ) : (
+                    <LinearGradient
+                        colors={[colorScheme.color1, colorScheme.color2]}
+                        style={styles.recipeImageGradient}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                    >
+                        <Text style={styles.recipeEmoji}>🍽️</Text>
+                    </LinearGradient>
+                )}
+                {!hasAccess && (
+                    <View style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 20, padding: 4 }}>
+                        <Ionicons name="lock-closed" size={24} color="#fff" />
                     </View>
-                    <View style={styles.recipeMetaItem}>
-                        <Ionicons name="time-outline" size={12} color={colors.textSecondary} />
-                        <Text style={[styles.recipeMetaText, { color: colors.textSecondary }]}>{recipe.time}m</Text>
+                )}
+                <View style={styles.recipeDetails}>
+                    <Text style={[styles.recipeName, { color: colors.text }]} numberOfLines={1}>{recipe.name}</Text>
+                    <View style={styles.recipeMetaRow}>
+                        <View style={styles.recipeMetaItem}>
+                            <Ionicons name="star" size={12} color="#FFD700" />
+                            <Text style={[styles.recipeMetaText, { color: colors.textSecondary }]}>{recipe.rating || 5.0}</Text>
+                        </View>
+                        <View style={styles.recipeMetaItem}>
+                            <Ionicons name="time-outline" size={12} color={colors.textSecondary} />
+                            <Text style={[styles.recipeMetaText, { color: colors.textSecondary }]}>{recipe.avg_time || 0}m</Text>
+                        </View>
+                        <Text style={[styles.recipePriceText, { color: hasAccess ? colors.success : colors.text }]}>
+                            {hasAccess ? (isOwnedByMe ? 'Owned' : (isPurchased ? 'Purchased' : 'Free')) : `$${recipe.price}`}
+                        </Text>
                     </View>
-                    <Text style={[styles.recipePriceText, { color: colors.text }]}>{recipe.price}</Text>
+                    <Text style={{ color: colors.textSecondary, fontSize: 10, marginTop: 4 }}>
+                        By {recipe.profiles?.username || 'Master Chef'}
+                    </Text>
                 </View>
-            </View>
-        </TouchableOpacity>
-    );
+            </TouchableOpacity>
+        );
+    };
 
     const renderFilterChip = (
         label: string,
@@ -826,6 +866,32 @@ export default function DashboardHomeScreen() {
                             </ScrollView>
                         </View>
 
+                        {/* Trending This Week */}
+                        <View style={styles.recipeSection}>
+                            <View style={styles.sectionHeader}>
+                                <View style={styles.trendingHeader}>
+                                    <Text style={[styles.sectionTitle, { color: colors.text }]}>Trending This Week</Text>
+                                    <View style={styles.trendingBadge}>
+                                        <Ionicons name="trending-up" size={12} color="#E53935" />
+                                        <Text style={styles.trendingBadgeText}>HOT</Text>
+                                    </View>
+                                </View>
+                            </View>
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recipeScroll}>
+                                {renderRecipeCard(TRENDING_RECIPE, 0, false)}
+                            </ScrollView>
+                        </View>
+
+                        {/* Recommended For You */}
+                        <View style={styles.recipeSection}>
+                            <View style={styles.sectionHeader}>
+                                <Text style={[styles.sectionTitle, { color: colors.text }]}>Recommended For You</Text>
+                            </View>
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recipeScroll}>
+                                {renderRecipeCard(RECOMMENDED_RECIPE, 1, false)}
+                            </ScrollView>
+                        </View>
+
                         {/* What Others Are Cooking */}
                         <View style={styles.recipeSection}>
                             <View style={styles.sectionHeader}>
@@ -842,70 +908,16 @@ export default function DashboardHomeScreen() {
                                 </View>
                             ) : expandedSection === 'others' ? (
                                 <View style={styles.recipeGrid}>
-                                    {filteredOthersRecipes.map(recipe => renderRecipeCard(recipe, true))}
+                                    {filteredOthersRecipes.map((recipe, index) => renderRecipeCard(recipe, index, true))}
                                 </View>
                             ) : (
                                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recipeScroll}>
-                                    {filteredOthersRecipes.map(recipe => renderRecipeCard(recipe, false))}
+                                    {filteredOthersRecipes.map((recipe, index) => renderRecipeCard(recipe, index, false))}
                                 </ScrollView>
                             )}
                         </View>
 
-                        {/* Recommended Foods */}
-                        <View style={styles.recipeSection}>
-                            <View style={styles.sectionHeader}>
-                                <Text style={[styles.sectionTitle, { color: colors.text }]}>Recommended For You</Text>
-                                <TouchableOpacity onPress={() => setExpandedSection(expandedSection === 'recommended' ? null : 'recommended')}>
-                                    <Text style={styles.seeAllText}>{expandedSection === 'recommended' ? 'Show Less' : 'See All'}</Text>
-                                </TouchableOpacity>
-                            </View>
-                            {filteredRecommendedRecipes.length === 0 ? (
-                                <View style={styles.emptyFilterState}>
-                                    <Ionicons name="search-outline" size={32} color="#555" />
-                                    <Text style={styles.emptyFilterText}>No recipes match your filters</Text>
-                                    <Text style={styles.emptyFilterSubtext}>Try adjusting your filter criteria</Text>
-                                </View>
-                            ) : expandedSection === 'recommended' ? (
-                                <View style={styles.recipeGrid}>
-                                    {filteredRecommendedRecipes.map(recipe => renderRecipeCard(recipe, true))}
-                                </View>
-                            ) : (
-                                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recipeScroll}>
-                                    {filteredRecommendedRecipes.map(recipe => renderRecipeCard(recipe, false))}
-                                </ScrollView>
-                            )}
-                        </View>
 
-                        {/* Trending This Week */}
-                        <View style={styles.recipeSection}>
-                            <View style={styles.sectionHeader}>
-                                <View style={styles.trendingHeader}>
-                                    <Text style={[styles.sectionTitle, { color: colors.text }]}>Trending This Week</Text>
-                                    <View style={styles.trendingBadge}>
-                                        <Ionicons name="trending-up" size={12} color="#E53935" />
-                                        <Text style={styles.trendingBadgeText}>HOT</Text>
-                                    </View>
-                                </View>
-                                <TouchableOpacity onPress={() => setExpandedSection(expandedSection === 'trending' ? null : 'trending')}>
-                                    <Text style={styles.seeAllText}>{expandedSection === 'trending' ? 'Show Less' : 'See All'}</Text>
-                                </TouchableOpacity>
-                            </View>
-                            {filteredTrendingRecipes.length === 0 ? (
-                                <View style={styles.emptyFilterState}>
-                                    <Ionicons name="search-outline" size={32} color="#555" />
-                                    <Text style={styles.emptyFilterText}>No recipes match your filters</Text>
-                                    <Text style={styles.emptyFilterSubtext}>Try adjusting your filter criteria</Text>
-                                </View>
-                            ) : expandedSection === 'trending' ? (
-                                <View style={styles.recipeGrid}>
-                                    {filteredTrendingRecipes.map(recipe => renderRecipeCard(recipe, true))}
-                                </View>
-                            ) : (
-                                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recipeScroll}>
-                                    {filteredTrendingRecipes.map(recipe => renderRecipeCard(recipe, false))}
-                                </ScrollView>
-                            )}
-                        </View>
                     </View>
                 )}
             </ScrollView>
@@ -921,55 +933,90 @@ export default function DashboardHomeScreen() {
                     >
                         <View style={styles.modalOverlay}>
                             <View style={[styles.modalContent, { backgroundColor: colors.card }]}>
-                                <View style={styles.detailsHeader}>
-                                    <LinearGradient
-                                        colors={[selectedRecipe.color1 || '#333', selectedRecipe.color2 || '#111']}
-                                        style={styles.detailsGradient}
-                                    >
-                                        <Text style={styles.detailsEmoji}>{selectedRecipe.emoji}</Text>
-                                    </LinearGradient>
+                                <ScrollView showsVerticalScrollIndicator={false}>
+                                    {selectedRecipe.image_url ? (
+                                        <View style={{ alignItems: 'center', marginBottom: 20 }}>
+                                            <Image
+                                                source={{ uri: selectedRecipe.image_url }}
+                                                style={{
+                                                    width: 200,
+                                                    height: 200,
+                                                    borderRadius: 100, // Circular image
+                                                    borderWidth: 3,
+                                                    borderColor: colors.border
+                                                }}
+                                                resizeMode="cover"
+                                            />
+                                        </View>
+                                    ) : (
+                                        <View style={{ alignItems: 'center', marginBottom: 20 }}>
+                                            <LinearGradient
+                                                colors={['#FF6B6B', '#FF8E53']}
+                                                style={{
+                                                    width: 200,
+                                                    height: 200,
+                                                    borderRadius: 100,
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    borderWidth: 3,
+                                                    borderColor: colors.border
+                                                }}
+                                            >
+                                                <Text style={{ fontSize: 60 }}>🍽️</Text>
+                                            </LinearGradient>
+                                        </View>
+                                    )}
+
+                                    <Text style={[styles.detailsTitle, { color: colors.text }]}>{selectedRecipe.name}</Text>
+                                    <Text style={[styles.detailsCreator, { color: colors.primary, textAlign: 'center' }]}>
+                                        By {selectedRecipe.profiles?.username || 'Master Chef'}
+                                    </Text>
+
+                                    <View style={[styles.detailsStats, { backgroundColor: colors.card }]}>
+                                        <View style={styles.statItem}>
+                                            <Ionicons name="people" size={20} color={colors.textSecondary} />
+                                            <Text style={[styles.statValue, { color: colors.text }]}>{selectedRecipe.total_cooks || 0}</Text>
+                                            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Cooked</Text>
+                                        </View>
+                                        <View style={styles.statDivider} />
+                                        <View style={styles.statItem}>
+                                            <Ionicons name="time" size={20} color={colors.textSecondary} />
+                                            <Text style={[styles.statValue, { color: colors.text }]}>
+                                                {selectedRecipe.cooking_steps && selectedRecipe.cooking_steps.length > 0
+                                                    ? Math.ceil(selectedRecipe.cooking_steps.reduce((acc: number, step: any) => acc + (step.duration || 0), 0) / 60)
+                                                    : (selectedRecipe.avg_time || 0)}m
+                                            </Text>
+                                            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Time</Text>
+                                        </View>
+                                        <View style={styles.statDivider} />
+                                        <View style={styles.statItem}>
+                                            <Ionicons name="star" size={20} color="#FFD700" />
+                                            <Text style={[styles.statValue, { color: colors.text }]}>{selectedRecipe.rating || 5.0}</Text>
+                                            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Rating</Text>
+                                        </View>
+                                    </View>
+
+                                    {selectedRecipe.price > 0 && (
+                                        <Text style={[styles.detailsPrice, { color: colors.text }]}>${selectedRecipe.price}</Text>
+                                    )}
+
                                     <TouchableOpacity
-                                        style={styles.closeButton}
+                                        style={styles.buyButton}
+                                        onPress={() => {
+                                            setSelectedRecipe(null);
+                                            setTimeout(() => setShowPurchaseModal(true), 300); // Wait for close anim
+                                        }}
+                                    >
+                                        <Text style={styles.buyButtonText}>Buy Recipe</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={[styles.buyButton, { backgroundColor: 'transparent', marginTop: 10, borderWidth: 1, borderColor: colors.border }]}
                                         onPress={() => setSelectedRecipe(null)}
                                     >
-                                        <Ionicons name="close" size={24} color="#fff" />
+                                        <Text style={[styles.buyButtonText, { color: colors.text }]}>Close</Text>
                                     </TouchableOpacity>
-                                </View>
-
-                                <Text style={[styles.detailsTitle, { color: colors.text }]}>{selectedRecipe.name}</Text>
-                                <Text style={[styles.detailsCreator, { color: colors.textSecondary }]}>by {selectedRecipe.creator || 'Master Chef'}</Text>
-
-                                <View style={[styles.detailsStats, { backgroundColor: colors.inputBackground }]}>
-                                    <View style={styles.statItem}>
-                                        <Ionicons name="people" size={16} color={colors.textSecondary} />
-                                        <Text style={[styles.statValue, { color: colors.text }]}>1.2k</Text>
-                                        <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Used</Text>
-                                    </View>
-                                    <View style={[styles.statDivider, { backgroundColor: colors.border }]} />
-                                    <View style={styles.statItem}>
-                                        <Ionicons name="time" size={16} color={colors.textSecondary} />
-                                        <Text style={[styles.statValue, { color: colors.text }]}>{selectedRecipe.time}</Text>
-                                        <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Time</Text>
-                                    </View>
-                                    <View style={[styles.statDivider, { backgroundColor: colors.border }]} />
-                                    <View style={styles.statItem}>
-                                        <Ionicons name="star" size={16} color={colors.textSecondary} />
-                                        <Text style={[styles.statValue, { color: colors.text }]}>{selectedRecipe.rating}</Text>
-                                        <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Rating</Text>
-                                    </View>
-                                </View>
-
-                                <Text style={[styles.detailsPrice, { color: colors.text }]}>{selectedRecipe.price}</Text>
-
-                                <TouchableOpacity
-                                    style={styles.buyButton}
-                                    onPress={() => {
-                                        setSelectedRecipe(null);
-                                        setTimeout(() => setShowPurchaseModal(true), 300); // Wait for close anim
-                                    }}
-                                >
-                                    <Text style={styles.buyButtonText}>Buy Recipe</Text>
-                                </TouchableOpacity>
+                                </ScrollView>
                             </View>
                         </View>
                     </Modal>
