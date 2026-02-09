@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import {
     Image,
@@ -18,6 +19,8 @@ import {
 import Toast from 'react-native-toast-message';
 import { usePayment } from '../context/PaymentContext';
 import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../lib/supabase';
+import { Database } from '../types/database.types';
 
 type FilterType = 'all' | 'budget' | 'moderate' | 'premium';
 type RatingFilter = 'all' | '3+' | '4+';
@@ -47,9 +50,17 @@ const trendingRecipes = [
 
 export default function DashboardHomeScreen() {
     const { colors } = useTheme();
+    const params = useLocalSearchParams();
     const [activeTab, setActiveTab] = useState<'cooking' | 'discover'>('cooking');
     const [isCooking, setIsCooking] = useState(false);
-    const [stoveStatus, setStoveStatus] = useState<'running' | 'stopped' | 'paused'>('running');
+
+    // Real-time ESP state
+    const [stoveTemp, setStoveTemp] = useState(0);
+    const [stirrerSpeed, setStirrerSpeed] = useState(0);
+    const [stoveStatus, setStoveStatus] = useState<'idle' | 'cooking' | 'paused' | 'error'>('idle');
+    const [activeSession, setActiveSession] = useState<any>(null); // Store the full session object
+    const [sessionSteps, setSessionSteps] = useState<any[]>([]); // Store the parsed steps
+
     const [showSteps, setShowSteps] = useState(false);
     const [showConfirmModal, setShowConfirmModal] = useState(false);
     const [pendingAction, setPendingAction] = useState<'stop' | 'pause' | null>(null);
@@ -71,30 +82,151 @@ export default function DashboardHomeScreen() {
     const [purchasePhone, setPurchasePhone] = useState('');
     const [purchaseReceipt, setPurchaseReceipt] = useState<string | null>(null);
 
-    // Mock cooking data
-    const cookingProgress = 65;
-    const [remainingTime, setRemainingTime] = useState(900); // 15 minutes in seconds
-    const currentStep = 3;
-    const totalSteps = 5;
-    const stoveTemp = 180;
-    const stirrerSpeed = 45;
+    // Real cooking data
+    const [currentStepIndex, setCurrentStepIndex] = useState(0);
+    const [totalStepsCount, setTotalStepsCount] = useState(0);
+    const [cookingProgress, setCookingProgress] = useState(0);
+    const [remainingTime, setRemainingTime] = useState(0);
+
+    // Subscribe to device_state
+    useEffect(() => {
+        // Initial fetch
+        const fetchState = async () => {
+            const { data, error } = await supabase
+                .from('device_state')
+                .select('*')
+                .limit(1)
+                .maybeSingle();
+
+            if (data) {
+                setStoveTemp(data.temperature);
+                setStirrerSpeed(data.stir_speed);
+                // @ts-ignore
+                setStoveStatus(data.status);
+            }
+        };
+        fetchState();
+
+        // Subscription
+        const subscription = supabase
+            .channel('device_state_changes')
+            .on(
+                'postgres_changes',
+                { event: '*', schema: 'public', table: 'device_state' },
+                (payload) => {
+                    const newState = payload.new as Database['public']['Tables']['device_state']['Row'];
+                    if (newState) {
+                        setStoveTemp(newState.temperature);
+                        setStirrerSpeed(newState.stir_speed);
+                        // @ts-ignore
+                        setStoveStatus(newState.status);
+                    }
+                }
+            )
+            .subscribe();
+
+        return () => {
+            subscription.unsubscribe();
+        };
+    }, []);
+
+    // Total duration of the current session in seconds
+    const [totalSessionDuration, setTotalSessionDuration] = useState(0);
+
+    // Fetch active session when cooking starts or on mount
+    useEffect(() => {
+        const fetchActiveSession = async () => {
+            console.log('Fetching active session...');
+            const { data, error } = await supabase
+                .from('cooking_sessions')
+                .select('*')
+                .eq('status', 'active')
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+            if (data) {
+                // @ts-ignore
+                console.log('Found active session:', data.id);
+                setActiveSession(data);
+
+                // @ts-ignore
+                const steps = data.steps as any[];
+                setSessionSteps(steps);
+                setTotalStepsCount(steps.length);
+                setCurrentStepIndex(data.current_step);
+
+                // Calculate total session duration
+                const totalDuration = steps.reduce((acc, step) => acc + (step.duration || 0), 0);
+                setTotalSessionDuration(totalDuration);
+
+                // Calculate remaining time based on current step and subsequent steps
+                // NOTE: This initial calculation assumes we are at the *start* of data.current_step
+                // If we want to be more precise, we'd need a 'step_started_at' timestamp
+                let timeLeft = 0;
+                for (let i = data.current_step; i < steps.length; i++) {
+                    timeLeft += steps[i].duration || 0;
+                }
+                setRemainingTime(timeLeft);
+
+                setIsCooking(true);
+                setActiveTab('cooking');
+            } else {
+                console.log('No active session found.');
+                setIsCooking(false);
+                setActiveSession(null);
+                setSessionSteps([]);
+            }
+        };
+
+        // Always fetch if we think we are cooking or if prompted
+        if (isCooking || params.startCooking === 'true') {
+            fetchActiveSession();
+        }
+    }, [params.startCooking, params.ts]); // Added params.ts to force refresh
 
     // Timer effects
+    useEffect(() => {
+        if (params.startCooking === 'true') {
+            setIsCooking(true);
+            setActiveTab('cooking');
+        }
+    }, [params.startCooking]);
+
     useEffect(() => {
         if (!isCooking) return;
 
         const interval = setInterval(() => {
-            if (stoveStatus === 'running') {
+            if (stoveStatus === 'cooking') {
                 setStepTimer(prev => prev + 1);
                 setRemainingTime(prev => Math.max(0, prev - 1));
                 setPauseTimer(0);
-            } else if (stoveStatus === 'paused' || stoveStatus === 'stopped') {
+
+                // Calculate Progress
+                if (totalSessionDuration > 0 && sessionSteps.length > 0) {
+                    // Time spent in previous steps
+                    let timeSpentPrevious = 0;
+                    for (let i = 0; i < currentStepIndex; i++) {
+                        timeSpentPrevious += sessionSteps[i].duration || 0;
+                    }
+
+                    // Time spent in current step (capped at duration)
+                    const currentStepDuration = sessionSteps[currentStepIndex]?.duration || 0;
+                    const timeSpentCurrent = Math.min(stepTimer + 1, currentStepDuration); // +1 because stepTimer updates next tick
+
+                    const totalTimeSpent = timeSpentPrevious + timeSpentCurrent;
+                    const progress = (totalTimeSpent / totalSessionDuration) * 100;
+
+                    setCookingProgress(Math.min(100, progress));
+                }
+
+            } else if (stoveStatus === 'paused' || stoveStatus === 'idle') {
                 setPauseTimer(prev => prev + 1);
             }
         }, 1000);
 
         return () => clearInterval(interval);
-    }, [isCooking, stoveStatus]);
+    }, [isCooking, stoveStatus, currentStepIndex, sessionSteps, totalSessionDuration, stepTimer]);
 
     // Cooking steps data
     const cookingSteps = [
@@ -182,18 +314,19 @@ export default function DashboardHomeScreen() {
 
     const handleStoveAction = (action: 'start' | 'stop' | 'pause' | 'resume') => {
         if (action === 'stop' || action === 'pause') {
-            setPendingAction(action);
             setShowConfirmModal(true);
         } else if (action === 'start' || action === 'resume') {
-            setStoveStatus('running');
+            // These will eventually trigger DB updates, but for now we wait for ESP/DB update
+            // setStoveStatus('cooking'); 
         }
     };
 
     const confirmAction = () => {
+        // Here we would ideally emit a command to Supabase/ESP
         if (pendingAction === 'stop') {
-            setStoveStatus('stopped');
+            // setStoveStatus('idle'); // Wait for ESP to confirm
         } else if (pendingAction === 'pause') {
-            setStoveStatus('paused');
+            // setStoveStatus('paused'); // Wait for ESP to confirm
         }
         setShowConfirmModal(false);
         setPendingAction(null);
@@ -393,9 +526,19 @@ export default function DashboardHomeScreen() {
                                     </View>
                                     <View style={styles.progressContainer}>
                                         <View style={[styles.progressBar, { backgroundColor: colors.border }]}>
-                                            <View style={[styles.progressFill, { width: `${cookingProgress}%` }]} />
+                                            <View
+                                                style={[
+                                                    styles.progressFill,
+                                                    {
+                                                        width: `${cookingProgress}%`,
+                                                        backgroundColor: colors.primary
+                                                    }
+                                                ]}
+                                            />
                                         </View>
-                                        <Text style={[styles.progressText, { color: colors.text }]}>{cookingProgress}%</Text>
+                                        <Text style={[styles.progressText, { color: colors.text }]}>
+                                            {Math.round(cookingProgress)}%
+                                        </Text>
                                     </View>
                                     <View style={styles.infoRow}>
                                         <View style={styles.infoItem}>
@@ -404,36 +547,42 @@ export default function DashboardHomeScreen() {
                                         </View>
                                         <View style={styles.infoItem}>
                                             <Ionicons name="list-outline" size={18} color="#E53935" />
-                                            <Text style={[styles.infoText, { color: colors.text }]}>Step {currentStep} of {totalSteps}</Text>
+                                            <Text style={[styles.infoText, { color: colors.text }]}>Step {currentStepIndex + 1} of {totalStepsCount}</Text>
                                         </View>
                                     </View>
-                                    <Text style={[styles.stepDescription, { color: colors.textSecondary }]}>Simmering ingredients at medium heat</Text>
+                                    <Text style={[styles.stepDescription, { color: colors.textSecondary }]}>
+                                        {sessionSteps[currentStepIndex] ? (
+                                            sessionSteps[currentStepIndex].instruction === 'add ingredient'
+                                                ? `Add ${sessionSteps[currentStepIndex].ingredientName}`
+                                                : sessionSteps[currentStepIndex].instruction
+                                        ) : 'Loading...'}
+                                    </Text>
 
                                     {showSteps && (
                                         <View style={styles.stepsContainer}>
                                             <View style={styles.stepsDivider} />
-                                            {cookingSteps.map((step, index) => (
-                                                <View key={step.id} style={styles.stepItem}>
+                                            {sessionSteps.map((step, index) => (
+                                                <View key={index} style={styles.stepItem}>
                                                     <View style={styles.stepIndicatorContainer}>
                                                         <View
                                                             style={[
                                                                 styles.stepIndicator,
-                                                                step.status === 'completed' && styles.stepIndicatorCompleted,
-                                                                step.status === 'current' && styles.stepIndicatorCurrent,
-                                                                step.status === 'pending' && styles.stepIndicatorPending,
+                                                                index < currentStepIndex && styles.stepIndicatorCompleted,
+                                                                index === currentStepIndex && styles.stepIndicatorCurrent,
+                                                                index > currentStepIndex && styles.stepIndicatorPending,
                                                             ]}
                                                         >
-                                                            {step.status === 'completed' ? (
+                                                            {index < currentStepIndex ? (
                                                                 <Ionicons name="checkmark" size={16} color="#fff" />
                                                             ) : (
-                                                                <Text style={styles.stepNumber}>{step.id}</Text>
+                                                                <Text style={styles.stepNumber}>{index + 1}</Text>
                                                             )}
                                                         </View>
-                                                        {index < cookingSteps.length - 1 && (
+                                                        {index < sessionSteps.length - 1 && (
                                                             <View
                                                                 style={[
                                                                     styles.stepConnector,
-                                                                    step.status === 'completed' && styles.stepConnectorCompleted,
+                                                                    index < currentStepIndex && styles.stepConnectorCompleted,
                                                                 ]}
                                                             />
                                                         )}
@@ -444,22 +593,22 @@ export default function DashboardHomeScreen() {
                                                                 style={[
                                                                     styles.stepTitle,
                                                                     { color: colors.text },
-                                                                    step.status === 'completed' && styles.stepTitleCompleted,
-                                                                    step.status === 'current' && (stoveStatus === 'running' ? styles.stepTitleCurrent : styles.stepTitlePaused),
-                                                                    step.status === 'pending' && styles.stepTitlePending,
+                                                                    index < currentStepIndex && styles.stepTitleCompleted,
+                                                                    index === currentStepIndex && (stoveStatus === 'cooking' ? styles.stepTitleCurrent : styles.stepTitlePaused),
+                                                                    index > currentStepIndex && styles.stepTitlePending,
                                                                 ]}
                                                             >
-                                                                {step.title}
+                                                                Step {index + 1}: {step.instruction === 'add ingredient' ? `Add ${step.ingredientName}` : step.instruction}
                                                             </Text>
-                                                            {step.status === 'current' && (
+                                                            {index === currentStepIndex && (
                                                                 <View style={styles.stepTimers}>
-                                                                    {stoveStatus === 'running' && (
+                                                                    {stoveStatus === 'cooking' && (
                                                                         <View style={styles.timerBadge}>
                                                                             <Ionicons name="time" size={12} color="#FF9800" />
                                                                             <Text style={styles.timerText}>{formatTime(stepTimer)}</Text>
                                                                         </View>
                                                                     )}
-                                                                    {(stoveStatus === 'paused' || stoveStatus === 'stopped') && pauseTimer > 0 && (
+                                                                    {(stoveStatus === 'paused' || stoveStatus === 'idle') && pauseTimer > 0 && (
                                                                         <View style={[styles.timerBadge, styles.pauseTimerBadge]}>
                                                                             <Ionicons name="pause" size={12} color="#E53935" />
                                                                             <Text style={[styles.timerText, styles.pauseTimerText]}>{formatTime(pauseTimer)}</Text>
@@ -471,10 +620,10 @@ export default function DashboardHomeScreen() {
                                                         <Text
                                                             style={[
                                                                 styles.stepDescriptionText,
-                                                                step.status === 'current' && styles.stepDescriptionCurrent,
+                                                                index === currentStepIndex && styles.stepDescriptionCurrent,
                                                             ]}
                                                         >
-                                                            {step.description}
+                                                            {step.duration}s · {step.temperature}°C {step.currentIngredient ? ` · ${step.currentIngredient.amount}${step.currentIngredient.unit}` : ''}
                                                         </Text>
                                                     </View>
                                                 </View>
@@ -487,7 +636,7 @@ export default function DashboardHomeScreen() {
                                 <View style={[styles.card, { backgroundColor: colors.card }]}>
                                     <Text style={[styles.cardTitle, { color: colors.text }]}>Stove Controls</Text>
                                     <View style={styles.controlsRow}>
-                                        {stoveStatus === 'stopped' && (
+                                        {stoveStatus === 'idle' && (
                                             <TouchableOpacity
                                                 style={[styles.controlButton, styles.controlButtonStart]}
                                                 onPress={() => handleStoveAction('start')}
@@ -498,7 +647,7 @@ export default function DashboardHomeScreen() {
                                                 </Text>
                                             </TouchableOpacity>
                                         )}
-                                        {stoveStatus === 'running' && (
+                                        {stoveStatus === 'cooking' && (
                                             <>
                                                 <TouchableOpacity
                                                     style={[styles.controlButton, styles.controlButtonPause]}
@@ -550,22 +699,22 @@ export default function DashboardHomeScreen() {
                                     <View style={[styles.statusCard, { backgroundColor: colors.card }]}>
                                         <View style={[
                                             styles.statusIconContainer,
-                                            stoveStatus === 'running' ? styles.statusIconRunning :
+                                            stoveStatus === 'cooking' ? styles.statusIconRunning :
                                                 stoveStatus === 'paused' ? styles.statusIconPaused : styles.statusIconStopped
                                         ]}>
                                             <Ionicons
-                                                name={stoveStatus === 'running' ? 'flame' : stoveStatus === 'paused' ? 'pause' : 'stop-circle'}
+                                                name={stoveStatus === 'cooking' ? 'flame' : stoveStatus === 'paused' ? 'pause' : 'stop-circle'}
                                                 size={24}
-                                                color={stoveStatus === 'running' ? '#4CAF50' : stoveStatus === 'paused' ? '#FF9800' : '#E53935'}
+                                                color={stoveStatus === 'cooking' ? '#4CAF50' : stoveStatus === 'paused' ? '#FF9800' : '#E53935'}
                                             />
                                         </View>
                                         <Text style={[styles.statusLabel, { color: colors.textSecondary }]}>Stove Status</Text>
                                         <Text style={[
                                             styles.statusValue,
-                                            stoveStatus === 'running' ? styles.statusRunning :
+                                            stoveStatus === 'cooking' ? styles.statusRunning :
                                                 stoveStatus === 'paused' ? styles.statusPausedText : styles.statusStopped
                                         ]}>
-                                            {stoveStatus === 'running' ? 'RUNNING' : stoveStatus === 'paused' ? 'PAUSED' : 'STOPPED'}
+                                            {stoveStatus === 'cooking' ? 'COOKING' : stoveStatus === 'paused' ? 'PAUSED' : 'IDLE'}
                                         </Text>
                                     </View>
                                     <View style={[styles.statusCard, { backgroundColor: colors.card }]}>

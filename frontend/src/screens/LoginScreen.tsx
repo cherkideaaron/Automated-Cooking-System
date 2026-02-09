@@ -14,6 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../lib/supabase';
 
 export default function LoginScreen() {
   const { colors, isDark } = useTheme();
@@ -36,6 +37,17 @@ export default function LoginScreen() {
       return;
     }
 
+    // Email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email.trim())) {
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Please enter a valid email address'
+      });
+      return;
+    }
+
     if (!isSignIn && !name.trim()) {
       Toast.show({
         type: 'error',
@@ -45,43 +57,84 @@ export default function LoginScreen() {
       return;
     }
 
+    // Password strength validation for sign up
+    if (!isSignIn && password.length < 6) {
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Password must be at least 6 characters'
+      });
+      return;
+    }
+
     setLoading(true);
 
-    // For now — simple credential check (to be replaced with Supabase later)
-    const correctEmail = 'kevindeaaron53@gmail.com';
-    const correctPassword = 'Aaron@123';
-
-    setTimeout(() => {
-      setLoading(false);
-
+    try {
       if (isSignIn) {
-        // Login mode
-        if (email.trim().toLowerCase() === correctEmail.toLowerCase() &&
-          password === correctPassword) {
-          router.replace('./(dashboard)');
-          // or: router.replace('./(dashboard)');  ← use whichever matches your folder structure
-        } else {
+        // Login mode - use Supabase Auth
+        const { data: authData, error } = await supabase.auth.signInWithPassword({
+          email: email.trim().toLowerCase(),
+          password: password,
+        });
+
+        setLoading(false);
+
+        if (error) {
           Toast.show({
             type: 'error',
             text1: 'Login Failed',
-            text2: 'Invalid email or password'
+            text2: error.message || 'Invalid email or password'
           });
+        } else if (authData.user) {
+          Toast.show({
+            type: 'success',
+            text1: 'Welcome Back!',
+            text2: 'Login successful'
+          });
+          router.replace('./(dashboard)');
         }
       } else {
-        // Sign up mode — for demo we just let them through
-        // (later you'll create the user in Supabase here)
-        // (later you'll create the user in Supabase here)
-        Toast.show({
-          type: 'success',
-          text1: 'Account Created',
-          text2: 'Welcome! You can now sign in.'
+        // Sign up mode - create user in Supabase
+        const { data: authData, error } = await supabase.auth.signUp({
+          email: email.trim().toLowerCase(),
+          password: password,
+          options: {
+            data: {
+              username: name.trim(),
+            },
+          },
         });
-        setIsSignIn(true); // switch back to sign-in view
-        setName('');
-        setEmail('');
-        setPassword('');
+
+        setLoading(false);
+
+        if (error) {
+          Toast.show({
+            type: 'error',
+            text1: 'Sign Up Failed',
+            text2: error.message || 'Could not create account'
+          });
+        } else if (authData.user) {
+          Toast.show({
+            type: 'success',
+            text1: 'Account Created',
+            text2: 'Welcome! You can now sign in.'
+          });
+          // Switch to sign-in view and clear fields
+          setIsSignIn(true);
+          setName('');
+          setEmail('');
+          setPassword('');
+        }
       }
-    }, 1200);
+    } catch (error) {
+      setLoading(false);
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'An unexpected error occurred'
+      });
+      console.error('Auth error:', error);
+    }
   };
 
   return (

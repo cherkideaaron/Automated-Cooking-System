@@ -1,7 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Image,
   Modal,
   Pressable,
@@ -13,9 +14,12 @@ import {
 } from 'react-native';
 import Toast from 'react-native-toast-message';
 import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../lib/supabase';
+import { recipeService, RecipeWithDetails } from '../services/recipeService';
 
 interface Step {
   id: number;
+  dbId?: string; // Database ID for updates
   instruction: 'add ingredient' | 'stir' | 'idle';
   ingredientName?: string;
   duration: number; // in seconds
@@ -27,6 +31,8 @@ interface Step {
 
 interface Ingredient {
   id: number;
+  dbRecipeIngredientId?: string; // Database recipe_ingredient ID for updates
+  dbIngredientId?: string; // Database ingredient ID
   name: string;
   amount: number;
   unit: 'ml' | 'g' | 'pcs';
@@ -45,54 +51,14 @@ interface Recipe {
   ingredients: Ingredient[];
 }
 
-const mockRecipes: Recipe[] = [
-  {
-    id: '1',
-    name: 'Pasta Carbonara',
-    duration: 25,
-    rating: 4.8,
-    image: 'https://images.unsplash.com/photo-1621996346565-e3dbc646d9a9?w=400',
-    creator: 'Chef Maria',
-    servings: 2,
-    steps: [
-      { id: 1, instruction: 'add ingredient', ingredientName: 'Water', duration: 5, temperature: 100, stirrerSpeed: 0 },
-      { id: 2, instruction: 'idle', duration: 600, temperature: 100, stirrerSpeed: 0 },
-      { id: 3, instruction: 'add ingredient', ingredientName: 'Pasta', duration: 5, temperature: 95, stirrerSpeed: 0 },
-      { id: 4, instruction: 'stir', duration: 600, temperature: 95, stirrerSpeed: 2 },
-    ],
-    ingredients: [
-      { id: 1, name: 'Water', amount: 500, unit: 'ml', cup: 1 },
-      { id: 2, name: 'Pasta', amount: 200, unit: 'g', cup: 2 },
-      { id: 3, name: 'Eggs', amount: 2, unit: 'pcs', cup: 3 },
-      { id: 4, name: 'Bacon', amount: 150, unit: 'g', cup: 4 },
-    ],
-  },
-  {
-    id: '2',
-    name: 'Vegetable Stir Fry',
-    duration: 15,
-    rating: 4.5,
-    image: 'https://images.unsplash.com/photo-1631021967261-c57ee4dfa9bb?fm=jpg&q=60&w=3000&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D',
-    creator: 'Chef John',
-    servings: 1,
-    steps: [
-      { id: 1, instruction: 'add ingredient', ingredientName: 'Oil', duration: 5, temperature: 180, stirrerSpeed: 0 },
-      { id: 2, instruction: 'idle', duration: 60, temperature: 180, stirrerSpeed: 0 },
-      { id: 3, instruction: 'add ingredient', ingredientName: 'Vegetables', duration: 10, temperature: 160, stirrerSpeed: 0 },
-      { id: 4, instruction: 'stir', duration: 300, temperature: 160, stirrerSpeed: 4 },
-    ],
-    ingredients: [
-      { id: 1, name: 'Oil', amount: 30, unit: 'ml', cup: 1 },
-      { id: 2, name: 'Broccoli', amount: 150, unit: 'g', cup: 2 },
-      { id: 3, name: 'Carrots', amount: 100, unit: 'g', cup: 3 },
-      { id: 4, name: 'Soy Sauce', amount: 50, unit: 'ml', cup: 4 },
-    ],
-  },
-];
+// Recipes will be fetched from database
 
 export default function RecipesScreen() {
   const { colors } = useTheme();
-  const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
+  const router = useRouter();
+  const [recipes, setRecipes] = useState<RecipeWithDetails[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedRecipe, setSelectedRecipe] = useState<RecipeWithDetails | null>(null);
   const [servings, setServings] = useState(1);
   const [steps, setSteps] = useState<Step[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
@@ -101,8 +67,31 @@ export default function RecipesScreen() {
   const [editingIngredient, setEditingIngredient] = useState<Ingredient | null>(null);
   const [showConfirmCooking, setShowConfirmCooking] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showIngredientDropdown, setShowIngredientDropdown] = useState(false);
 
   const params = useLocalSearchParams();
+
+  // Fetch recipes from database on mount
+  useEffect(() => {
+    loadRecipes();
+  }, []);
+
+  const loadRecipes = async () => {
+    setLoading(true);
+    try {
+      const data = await recipeService.getAllRecipes();
+      setRecipes(data);
+    } catch (error) {
+      console.error('Error loading recipes:', error);
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Failed to load recipes'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (params.search) {
@@ -112,9 +101,36 @@ export default function RecipesScreen() {
 
   useEffect(() => {
     if (selectedRecipe) {
-      setServings(selectedRecipe.servings);
-      setSteps(selectedRecipe.steps);
-      setIngredients(selectedRecipe.ingredients);
+      // Transform database cooking_steps to UI Step format
+      const transformedSteps: Step[] = (selectedRecipe.cooking_steps || []).map((dbStep, index) => ({
+        id: index + 1,
+        dbId: dbStep.id, // Store database ID
+        instruction: dbStep.action === 'add_ingredient' ? 'add ingredient' :
+          dbStep.action === 'stir' ? 'stir' : 'idle',
+        ingredientName: dbStep.action === 'add_ingredient' && dbStep.target_cup ?
+          selectedRecipe.ingredients?.find(ri => ri.cup_index === dbStep.target_cup)?.ingredient?.name : undefined,
+        duration: dbStep.duration,
+        temperature: 25, // Default temperature
+        stirrerSpeed: dbStep.action === 'stir' ? 2 : 0,
+        amount: dbStep.action === 'add_ingredient' && dbStep.target_cup ?
+          selectedRecipe.ingredients?.find(ri => ri.cup_index === dbStep.target_cup)?.amount : undefined,
+        unit: 'ml' as const
+      }));
+
+      // Transform database recipe_ingredients to UI Ingredient format
+      const transformedIngredients: Ingredient[] = (selectedRecipe.ingredients || []).map((ri, index) => ({
+        id: index + 1,
+        dbRecipeIngredientId: `${selectedRecipe.recipe_id}-${ri.ingredient_id}`, // Composite key
+        dbIngredientId: ri.ingredient_id,
+        name: ri.ingredient?.name || 'Unknown',
+        amount: ri.amount,
+        unit: 'ml' as const, // Default unit
+        cup: ri.cup_index || 1
+      }));
+
+      setServings(1); // Default servings
+      setSteps(transformedSteps);
+      setIngredients(transformedIngredients);
     }
   }, [selectedRecipe]);
 
@@ -128,13 +144,13 @@ export default function RecipesScreen() {
     let currentIng: { name: string; amount: number; unit: string } | null = null;
 
     return steps.map(step => {
-      const scaledDuration = scaleValue(step.duration, selectedRecipe.servings);
+      const scaledDuration = scaleValue(step.duration, 1); // servings is always 1 for now
 
       // If step has a manual amount, use it (scaled)
       if (step.amount !== undefined) {
         currentIng = {
           name: step.ingredientName || 'Ingredient',
-          amount: scaleValue(step.amount, selectedRecipe.servings),
+          amount: scaleValue(step.amount, 1),
           unit: step.unit || 'g'
         };
       } else if (step.instruction === 'add ingredient' && step.ingredientName) {
@@ -142,7 +158,7 @@ export default function RecipesScreen() {
         if (ing) {
           currentIng = {
             name: ing.name,
-            amount: scaleValue(ing.amount, selectedRecipe.servings),
+            amount: scaleValue(ing.amount, 1),
             unit: ing.unit
           };
         }
@@ -160,7 +176,7 @@ export default function RecipesScreen() {
     if (!selectedRecipe) return [];
     return ingredients.map(ing => ({
       ...ing,
-      amount: scaleValue(ing.amount, selectedRecipe.servings)
+      amount: scaleValue(ing.amount, 1)
     }));
   }, [ingredients, servings, selectedRecipe]);
 
@@ -177,10 +193,10 @@ export default function RecipesScreen() {
 
   // Filtered recipes for list view - MUST be before any conditional returns
   const filteredRecipes = useMemo(() => {
-    return mockRecipes.filter(r =>
+    return recipes.filter(r =>
       r.name.toLowerCase().includes(searchQuery.toLowerCase())
     );
-  }, [searchQuery]);
+  }, [searchQuery, recipes]);
 
   /* =========================
      RECIPE DETAILS VIEW
@@ -197,13 +213,13 @@ export default function RecipesScreen() {
             <Text style={[styles.detailsTitle, { color: colors.text }]}>{selectedRecipe.name}</Text>
           </View>
 
-          <Image source={{ uri: selectedRecipe.image }} style={styles.image} />
+          <Image source={{ uri: selectedRecipe.image_url || 'https://via.placeholder.com/400' }} style={styles.image} />
 
           {/* INFO CARDS */}
           <View style={styles.infoRow}>
             <View style={[styles.infoCard, { backgroundColor: colors.card }]}>
               <Ionicons name="time-outline" size={18} color="#E53935" />
-              <Text style={[styles.infoText, { color: colors.text }]}>{selectedRecipe.duration} min</Text>
+              <Text style={[styles.infoText, { color: colors.text }]}>{selectedRecipe.avg_time} min</Text>
             </View>
 
             <View style={[styles.infoCard, { backgroundColor: colors.card }]}>
@@ -213,7 +229,7 @@ export default function RecipesScreen() {
 
             <View style={[styles.infoCard, { backgroundColor: colors.card }]}>
               <Ionicons name="restaurant" size={18} color="#E53935" />
-              <Text style={[styles.infoText, { color: colors.text }]}>{selectedRecipe.creator}</Text>
+              <Text style={[styles.infoText, { color: colors.text }]}>Recipe</Text>
             </View>
           </View>
 
@@ -358,6 +374,8 @@ export default function RecipesScreen() {
                     style={[styles.input, { color: colors.text, borderColor: colors.border }]}
                     value={editingStep.ingredientName}
                     onChangeText={(val: string) => setEditingStep(prev => prev ? { ...prev, ingredientName: val } : null)}
+                    placeholder="Enter ingredient name"
+                    placeholderTextColor="#666"
                   />
                 </>
               )}
@@ -417,12 +435,92 @@ export default function RecipesScreen() {
                   <Text style={{ color: colors.textSecondary }}>Cancel</Text>
                 </Pressable>
                 <Pressable
-                  onPress={() => {
-                    if (editingStep) {
-                      if (steps.some(s => s.id === editingStep.id)) {
+                  onPress={async () => {
+                    if (editingStep && selectedRecipe) {
+                      // Validation: Check if ingredient exists in recipe
+                      if (editingStep.instruction === 'add ingredient' && editingStep.ingredientName) {
+                        const exists = ingredients.some(i => i.name.toLowerCase() === editingStep.ingredientName?.toLowerCase());
+                        if (!exists) {
+                          Toast.show({
+                            type: 'error',
+                            text1: 'Ingredient Error',
+                            text2: `"${editingStep.ingredientName}" is not in the ingredients list.`
+                          });
+                          return;
+                        }
+                      }
+
+                      const isEditing = steps.some(s => s.id === editingStep.id);
+
+                      if (isEditing) {
+                        // Update existing step
                         setSteps(prev => prev.map(s => s.id === editingStep.id ? editingStep : s));
+
+                        // Update in database if it has a dbId
+                        if (editingStep.dbId) {
+                          const action = editingStep.instruction === 'add ingredient' ? 'add_ingredient' :
+                            editingStep.instruction === 'stir' ? 'stir' : 'idle';
+                          const targetCup = editingStep.instruction === 'add ingredient' ?
+                            ingredients.find(i => i.name === editingStep.ingredientName)?.cup : null;
+
+                          const success = await recipeService.updateCookingStep(
+                            editingStep.dbId,
+                            {
+                              action,
+                              duration: editingStep.duration,
+                              target_cup: targetCup || undefined
+                            }
+                          );
+
+                          if (success) {
+                            Toast.show({
+                              type: 'success',
+                              text1: 'Step updated',
+                              position: 'bottom'
+                            });
+                            await loadRecipes();
+                          } else {
+                            Toast.show({
+                              type: 'error',
+                              text1: 'Failed to update step',
+                              position: 'bottom'
+                            });
+                          }
+                        }
                       } else {
+                        // Add new step to local state
                         setSteps(prev => [...prev, editingStep]);
+
+                        // Save new step to database
+                        const stepOrder = steps.length + 1;
+                        const action = editingStep.instruction === 'add ingredient' ? 'add_ingredient' :
+                          editingStep.instruction === 'stir' ? 'stir' : 'idle';
+                        const targetCup = editingStep.instruction === 'add ingredient' ?
+                          ingredients.find(i => i.name === editingStep.ingredientName)?.cup : null;
+
+                        const success = await recipeService.addCookingStep(
+                          selectedRecipe.recipe_id,
+                          action,
+                          editingStep.duration,
+                          stepOrder,
+                          targetCup || undefined
+                        );
+
+                        if (success) {
+                          Toast.show({
+                            type: 'success',
+                            text1: 'Step added',
+                            position: 'bottom'
+                          });
+                          // Reload recipe to get updated data
+                          await loadRecipes();
+                        } else {
+                          Toast.show({
+                            type: 'error',
+                            text1: 'Failed to save step',
+                            position: 'bottom'
+                          });
+                        }
                       }
                       setEditingStep(null);
                     }
@@ -513,17 +611,93 @@ export default function RecipesScreen() {
                   <Text style={{ color: colors.textSecondary }}>Cancel</Text>
                 </Pressable>
                 <Pressable
-                  onPress={() => {
-                    if (editingIngredient) {
+                  onPress={async () => {
+                    if (editingIngredient && selectedRecipe) {
                       // Final validation/cleanup
                       let finalIngredient = { ...editingIngredient };
                       if (finalIngredient.cup > 7) finalIngredient.cup = 7;
                       if (finalIngredient.cup < 1) finalIngredient.cup = 1;
 
-                      if (ingredients.some(i => i.id === finalIngredient.id)) {
+                      // Validation: Check for duplicate cup numbers
+                      const cupExists = ingredients.some(i => i.cup === finalIngredient.cup && i.id !== finalIngredient.id);
+                      if (cupExists) {
+                        Toast.show({
+                          type: 'error',
+                          text1: 'Cup Conflict',
+                          text2: `Cup #${finalIngredient.cup} is already used by another ingredient.`
+                        });
+                        return;
+                      }
+
+                      const isEditing = ingredients.some(i => i.id === finalIngredient.id);
+
+                      if (isEditing) {
+                        // Update existing ingredient
                         setIngredients(prev => prev.map(i => i.id === finalIngredient.id ? finalIngredient : i));
+
+                        // Update in database if it has dbIngredientId
+                        if (finalIngredient.dbIngredientId) {
+                          const success = await recipeService.updateRecipeIngredient(
+                            selectedRecipe.recipe_id,
+                            finalIngredient.dbIngredientId,
+                            finalIngredient.amount,
+                            finalIngredient.cup
+                          );
+
+                          if (success) {
+                            Toast.show({
+                              type: 'success',
+                              text1: 'Ingredient updated',
+                              position: 'bottom'
+                            });
+                            await loadRecipes();
+                          } else {
+                            Toast.show({
+                              type: 'error',
+                              text1: 'Failed to update ingredient',
+                              position: 'bottom'
+                            });
+                          }
+                        }
                       } else {
+                        // Add new ingredient to local state
                         setIngredients(prev => [...prev, finalIngredient]);
+
+                        // First, check if ingredient exists in ingredients table
+                        let ingredientInDb = await recipeService.getAllIngredients();
+                        let ingredientId = ingredientInDb.find(i => i.name.toLowerCase() === finalIngredient.name.toLowerCase())?.ingredient_id;
+
+                        // If ingredient doesn't exist, create it
+                        if (!ingredientId) {
+                          const newIngredient = await recipeService.createIngredient(finalIngredient.name);
+                          ingredientId = newIngredient?.ingredient_id;
+                        }
+
+                        if (ingredientId) {
+                          // Add ingredient to recipe
+                          const success = await recipeService.addIngredientToRecipe(
+                            selectedRecipe.recipe_id,
+                            ingredientId,
+                            finalIngredient.amount,
+                            finalIngredient.cup
+                          );
+
+                          if (success) {
+                            Toast.show({
+                              type: 'success',
+                              text1: 'Ingredient added',
+                              position: 'bottom'
+                            });
+                            // Reload recipe to get updated data
+                            await loadRecipes();
+                          } else {
+                            Toast.show({
+                              type: 'error',
+                              text1: 'Failed to save ingredient',
+                              position: 'bottom'
+                            });
+                          }
+                        }
                       }
                       setEditingIngredient(null);
                     }
@@ -567,17 +741,63 @@ export default function RecipesScreen() {
                 </Pressable>
                 <Pressable
                   style={[styles.confirmModalButton, styles.modalButtonConfirm]}
-                  onPress={() => {
-                    setShowConfirmCooking(false);
-                    Toast.show({
-                      type: 'success',
-                      text1: 'Cooking started',
-                      position: 'bottom'
-                    });
+                  onPress={async () => {
+                    if (!selectedRecipe) return;
+
+                    try {
+                      // 1. Mark any existing active sessions as stopped
+                      const { error: updateError } = await supabase
+                        .from('cooking_sessions')
+                        .update({ status: 'stopped' })
+                        .eq('status', 'active');
+
+                      if (updateError) {
+                        console.warn('Error cleaning up old sessions:', updateError);
+                        // Continue anyway, as we want to start the new one
+                      }
+
+                      // 2. Create the new session
+                      const { error } = await supabase
+                        .from('cooking_sessions')
+                        .insert({
+                          recipe_id: selectedRecipe.recipe_id,
+                          status: 'active',
+                          current_step: 0,
+                          steps: scaledSteps // Store the scaled steps with ingredients
+                        });
+
+                      if (error) throw error;
+
+                      setShowConfirmCooking(false);
+                      Toast.show({
+                        type: 'success',
+                        text1: 'Starting Cooking...',
+                        text2: 'Redirecting to dashboard',
+                        position: 'bottom'
+                      });
+
+                      // Navigate to Dashboard with cooking params
+                      // Use a timestamp to force a refresh if the user is already on the dashboard
+                      router.push({
+                        pathname: "/(tabs)/",
+                        params: {
+                          startCooking: 'true',
+                          ts: Date.now().toString()
+                        }
+                      });
+                    } catch (e) {
+                      console.error(e);
+                      Toast.show({
+                        type: 'error',
+                        text1: 'Error starting session',
+                        text2: 'Please try again',
+                        position: 'bottom'
+                      });
+                    }
                   }}
                 >
                   <Text style={[styles.confirmModalButtonText, styles.modalButtonTextConfirm]}>
-                    Confirm
+                    Start Cooking
                   </Text>
                 </Pressable>
               </View>
@@ -612,27 +832,34 @@ export default function RecipesScreen() {
         )}
       </View>
 
-      {filteredRecipes.length === 0 ? (
+      {loading ? (
+        <View style={styles.emptySearch}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={[styles.emptySearchText, { color: colors.textSecondary }]}>
+            Loading recipes...
+          </Text>
+        </View>
+      ) : filteredRecipes.length === 0 ? (
         <View style={styles.emptySearch}>
           <Ionicons name="search-outline" size={48} color={colors.textSecondary} />
           <Text style={[styles.emptySearchText, { color: colors.textSecondary }]}>
-            No recipes found for "{searchQuery}"
+            {recipes.length === 0 ? 'No recipes yet. Add some recipes to get started!' : `No recipes found for "${searchQuery}"`}
           </Text>
         </View>
       ) : (
         filteredRecipes.map((recipe) => (
           <Pressable
-            key={recipe.id}
+            key={recipe.recipe_id}
             style={[styles.recipeCard, { backgroundColor: colors.card }]}
             onPress={() => setSelectedRecipe(recipe)}
           >
-            <Image source={{ uri: recipe.image }} style={styles.thumb} />
+            <Image source={{ uri: recipe.image_url || 'https://via.placeholder.com/90' }} style={styles.thumb} />
 
             <View style={{ flex: 1 }}>
               <Text style={[styles.recipeTitle, { color: colors.text }]}>{recipe.name}</Text>
 
               <View style={styles.metaRow}>
-                <Text style={[styles.metaText, { color: colors.textSecondary }]}>⏱ {recipe.duration} min</Text>
+                <Text style={[styles.metaText, { color: colors.textSecondary }]}>⏱ {recipe.avg_time} min</Text>
                 <Text style={[styles.metaText, { color: colors.textSecondary }]}>⭐ {recipe.rating}</Text>
               </View>
             </View>
@@ -933,8 +1160,20 @@ const styles = StyleSheet.create({
     marginTop: 60,
   },
   emptySearchText: {
+    marginTop: 16,
     fontSize: 14,
-    marginTop: 12,
+  },
+  dropdownItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  dropdownText: {
+    fontSize: 14,
+    flex: 1,
   },
   // Confirm Modal Styles
   confirmModalOverlay: {
