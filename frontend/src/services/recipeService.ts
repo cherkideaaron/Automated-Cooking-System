@@ -14,6 +14,7 @@ export interface RecipeWithDetails extends Recipe {
     ingredients?: Array<RecipeIngredient & { ingredient: Ingredient }>;
     cooking_steps?: CookingStep[];
     profiles?: Database['public']['Tables']['profiles']['Row'];
+    description?: string | null;
 }
 
 class RecipeService {

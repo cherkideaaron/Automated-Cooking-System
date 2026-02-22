@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -39,6 +39,18 @@ interface Ingredient {
   unit: 'ml' | 'g' | 'pcs';
   cup: number;
 }
+
+// Assuming RecipeWithDetails is defined in recipeService.ts and now includes 'description'
+// For the purpose of this file, we'll ensure the local Recipe interface is compatible
+// and assume RecipeWithDetails from recipeService.ts has the new field.
+// If the user intended to define RecipeWithDetails here, it would conflict with the import.
+// Therefore, this is a placeholder to reflect the change in the type's structure.
+// export interface RecipeWithDetails extends Recipe {
+//   ingredients?: Array<RecipeIngredient & { ingredient: Ingredient }>;
+//   cooking_steps?: CookingStep[];
+//   profiles?: Database['public']['Tables']['profiles']['Row'];
+//   description?: string | null;
+// }
 
 interface Recipe {
   id: string;
@@ -78,6 +90,7 @@ export default function RecipesScreen() {
   const [showConfirmCooking, setShowConfirmCooking] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showIngredientDropdown, setShowIngredientDropdown] = useState(false);
+  const [stoveStatus, setStoveStatus] = useState<'idle' | 'cooking' | 'paused' | 'error'>('idle');
 
   const params = useLocalSearchParams();
 
@@ -119,7 +132,6 @@ export default function RecipesScreen() {
     }
   }, [params.search]);
 
-  // Handle auto-open via params
   useEffect(() => {
     if (params.recipeId && recipes.length > 0) {
       const target = recipes.find(r => r.recipe_id === params.recipeId);
@@ -128,6 +140,46 @@ export default function RecipesScreen() {
       }
     }
   }, [params.recipeId, recipes]);
+
+  // Handle screen focus: Reset recipe selection and check stove status
+  useFocusEffect(
+    useCallback(() => {
+      setSelectedRecipe(null);
+      checkStoveStatus();
+    }, [])
+  );
+
+  const checkStoveStatus = async () => {
+    const { data } = await supabase
+      .from('device_state')
+      .select('status')
+      .eq('id', 'device_001')
+      .maybeSingle();
+
+    if (data) {
+      setStoveStatus(data.status);
+    }
+  };
+
+  // Subscribe to device status
+  useEffect(() => {
+    const channel = supabase
+      .channel('recipe_screen_stove_status')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'device_state', filter: 'id=eq.device_001' },
+        (payload) => {
+          setStoveStatus(payload.new.status);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const isCookingActive = stoveStatus === 'cooking' || stoveStatus === 'paused';
 
   useEffect(() => {
     if (selectedRecipe) {
@@ -520,12 +572,36 @@ export default function RecipesScreen() {
                 </Pressable>
               ))}
 
-              {/* START COOKING */}
+              {/* START / STOP COOKING */}
               <Pressable
-                style={styles.startBtn}
-                onPress={handleStartCooking}
+                style={[
+                  styles.startBtn,
+                  isCookingActive && { backgroundColor: '#E53935' }
+                ]}
+                onPress={isCookingActive ? async () => {
+                  // Stop cooking from here too
+                  const { error } = await supabase
+                    .from('device_state')
+                    .update({ status: 'idle' })
+                    .eq('id', 'device_001');
+
+                  if (!error) {
+                    await supabase
+                      .from('cooking_sessions')
+                      .update({ status: 'stopped' })
+                      .eq('status', 'active');
+
+                    Toast.show({
+                      type: 'success',
+                      text1: 'Cooking Stopped',
+                      position: 'bottom'
+                    });
+                  }
+                } : handleStartCooking}
               >
-                <Text style={styles.startText}>Start Cooking</Text>
+                <Text style={styles.startText}>
+                  {isCookingActive ? 'Stop Cooking' : 'Start Cooking'}
+                </Text>
               </Pressable>
             </>
           )}
@@ -967,20 +1043,21 @@ export default function RecipesScreen() {
                       setShowConfirmCooking(false);
                       Toast.show({
                         type: 'success',
-                        text1: 'Starting Cooking...',
-                        text2: 'Redirecting to dashboard',
-                        position: 'bottom'
+                        text1: 'Cooking Session Initialized',
+                        text2: "Click 'Start' in Stove Controls to begin cooking!",
+                        position: 'bottom',
+                        visibilityTime: 4000
                       });
 
                       // Navigate to Dashboard with cooking params
                       // Use a timestamp to force a refresh if the user is already on the dashboard
                       router.push({
-                        pathname: "/(tabs)/",
+                        pathname: "/(tabs)",
                         params: {
                           startCooking: 'true',
                           ts: Date.now().toString()
                         }
-                      });
+                      } as any);
                     } catch (e) {
                       console.error(e);
                       Toast.show({
@@ -1000,6 +1077,13 @@ export default function RecipesScreen() {
             </View>
           </View>
         </Modal>
+        {/* Cooking in Progress Overlay */}
+        {isCookingActive && (
+          <View style={styles.lockOverlay}>
+            <Ionicons name="lock-closed" size={24} color="#fff" />
+            <Text style={styles.lockText}>Cooking in progress. Please stop current session to select a new recipe.</Text>
+          </View>
+        )}
       </View>
     );
   }
@@ -1008,64 +1092,77 @@ export default function RecipesScreen() {
      RECIPE LIST VIEW
   ========================== */
   return (
-    <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
-      <Text style={[styles.pageTitle, { color: colors.text }]}>My Recipes</Text>
+    <View style={{ flex: 1, backgroundColor: colors.background, opacity: isCookingActive ? 0.7 : 1 }}>
+      <ScrollView
+        style={[styles.container, { backgroundColor: colors.background }]}
+        pointerEvents={isCookingActive ? 'none' : 'auto'}
+      >
+        <Text style={[styles.pageTitle, { color: colors.text }]}>My Recipes</Text>
 
-      {/* SEARCH BAR */}
-      <View style={[styles.searchContainer, { backgroundColor: colors.card, borderColor: colors.border }]}>
-        <Ionicons name="search" size={20} color={colors.textSecondary} />
-        <TextInput
-          style={[styles.searchInput, { color: colors.text }]}
-          placeholder="Search recipes..."
-          placeholderTextColor={colors.textSecondary}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-        />
-        {searchQuery.length > 0 && (
-          <Pressable onPress={() => setSearchQuery('')}>
-            <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
-          </Pressable>
-        )}
-      </View>
-
-      {loading ? (
-        <View style={styles.emptySearch}>
-          <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={[styles.emptySearchText, { color: colors.textSecondary }]}>
-            Loading recipes...
-          </Text>
+        {/* SEARCH BAR */}
+        <View style={[styles.searchContainer, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <Ionicons name="search" size={20} color={colors.textSecondary} />
+          <TextInput
+            style={[styles.searchInput, { color: colors.text }]}
+            placeholder="Search recipes..."
+            placeholderTextColor={colors.textSecondary}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+          {searchQuery.length > 0 && (
+            <Pressable onPress={() => setSearchQuery('')}>
+              <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
+            </Pressable>
+          )}
         </View>
-      ) : filteredRecipes.length === 0 ? (
-        <View style={styles.emptySearch}>
-          <Ionicons name="search-outline" size={48} color={colors.textSecondary} />
-          <Text style={[styles.emptySearchText, { color: colors.textSecondary }]}>
-            {recipes.length === 0 ? 'No recipes yet. Add some recipes to get started!' : `No recipes found for "${searchQuery}"`}
-          </Text>
-        </View>
-      ) : (
-        filteredRecipes.map((recipe) => (
-          <Pressable
-            key={recipe.recipe_id}
-            style={[styles.recipeCard, { backgroundColor: colors.card }]}
-            onPress={() => setSelectedRecipe(recipe)}
-          >
-            <Image source={{ uri: recipe.image_url || 'https://via.placeholder.com/90' }} style={styles.thumb} />
 
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.recipeTitle, { color: colors.text }]}>{recipe.name}</Text>
+        {loading ? (
+          <View style={styles.emptySearch}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={[styles.emptySearchText, { color: colors.textSecondary }]}>
+              Loading recipes...
+            </Text>
+          </View>
+        ) : filteredRecipes.length === 0 ? (
+          <View style={styles.emptySearch}>
+            <Ionicons name="search-outline" size={48} color={colors.textSecondary} />
+            <Text style={[styles.emptySearchText, { color: colors.textSecondary }]}>
+              {recipes.length === 0 ? 'No recipes yet. Add some recipes to get started!' : `No recipes found for "${searchQuery}"`}
+            </Text>
+          </View>
+        ) : (
+          filteredRecipes.map((recipe) => (
+            <Pressable
+              key={recipe.recipe_id}
+              style={[styles.recipeCard, { backgroundColor: colors.card }]}
+              onPress={() => setSelectedRecipe(recipe)}
+            >
+              <Image source={{ uri: recipe.image_url || 'https://via.placeholder.com/90' }} style={styles.thumb} />
 
-              <View style={styles.metaRow}>
-                <Text style={[styles.metaText, { color: colors.textSecondary }]}>⏱ {recipe.avg_time} min</Text>
-                <Text style={[styles.metaText, { color: colors.textSecondary }]}>⭐ {recipe.rating}</Text>
-                <Text style={[styles.metaText, { color: recipe.price ? colors.primary : '#4CAF50', fontWeight: 'bold' }]}>
-                  {recipe.price ? `$${recipe.price}` : 'Free'}
-                </Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.recipeTitle, { color: colors.text }]}>{recipe.name}</Text>
+
+                <View style={styles.metaRow}>
+                  <Text style={[styles.metaText, { color: colors.textSecondary }]}>⏱ {recipe.avg_time} min</Text>
+                  <Text style={[styles.metaText, { color: colors.textSecondary }]}>⭐ {recipe.rating}</Text>
+                  <Text style={[styles.metaText, { color: recipe.price ? colors.primary : '#4CAF50', fontWeight: 'bold' }]}>
+                    {recipe.price ? `$${recipe.price}` : 'Free'}
+                  </Text>
+                </View>
               </View>
-            </View>
-          </Pressable>
-        ))
+            </Pressable>
+          ))
+        )}
+      </ScrollView>
+
+      {/* Cooking in Progress Overlay */}
+      {isCookingActive && (
+        <View style={styles.lockOverlay}>
+          <Ionicons name="lock-closed" size={24} color="#fff" />
+          <Text style={styles.lockText}>Cooking in progress. Please stop current session to select a new recipe.</Text>
+        </View>
       )}
-    </ScrollView>
+    </View>
   );
 }
 
@@ -1437,5 +1534,28 @@ const styles = StyleSheet.create({
   },
   modalButtonTextConfirm: {
     color: '#fff',
+  },
+  lockOverlay: {
+    position: 'absolute',
+    bottom: 20,
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(229, 57, 53, 0.9)',
+    padding: 16,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  lockText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    flex: 1,
   },
 });
