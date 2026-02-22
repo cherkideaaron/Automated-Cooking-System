@@ -15,6 +15,7 @@ import Toast from 'react-native-toast-message';
 
 import { usePayment } from '../context/PaymentContext';
 import { useTheme } from '../context/ThemeContext';
+import { authService } from '../services/authService';
 import { recipeService } from '../services/recipeService';
 
 const GEMINI_API_KEY_STORAGE = '@gemini_api_key';
@@ -114,6 +115,24 @@ export default function SettingsScreen() {
     }
   };
 
+  const handleLogout = async () => {
+    const { error } = await (authService as any).signOut();
+    if (error) {
+      Toast.show({
+        type: 'error',
+        text1: 'Logout Failed',
+        text2: error.message
+      });
+    } else {
+      Toast.show({
+        type: 'success',
+        text1: 'Logged Out',
+        text2: 'See you soon!'
+      });
+      // In a real app, you'd navigate back to Login or reset the session state
+    }
+  };
+
   const handleApproveRequest = async (buyerId: string, recipeId: string) => {
     const success = await recipeService.approvePurchaseRequest(buyerId, recipeId);
     if (success) {
@@ -139,7 +158,7 @@ export default function SettingsScreen() {
       <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Account</Text>
       <View style={[styles.card, { backgroundColor: colors.card }]}>
         <Text style={[styles.label, { color: colors.textSecondary }]}>Email</Text>
-        <Text style={[styles.value, { color: colors.text }]}>{userEmail}</Text>
+        <Text style={[styles.value, { color: colors.text }]}>{userEmail || 'Loading...'}</Text>
 
         <Text style={[styles.label, { marginTop: 12, color: colors.textSecondary }]}>Username</Text>
 
@@ -149,14 +168,18 @@ export default function SettingsScreen() {
               style={[styles.editInput, { color: colors.text, borderColor: colors.border }]}
               value={username}
               onChangeText={setUsername}
+              autoFocus
             />
             <Pressable onPress={handleSaveProfile} style={styles.saveIconBtn}>
               <Ionicons name="checkmark-circle" size={24} color={colors.success} />
             </Pressable>
+            <Pressable onPress={() => setIsEditingProfile(false)} style={styles.saveIconBtn}>
+              <Ionicons name="close-circle" size={24} color={colors.error} />
+            </Pressable>
           </View>
         ) : (
           <View style={styles.rowBetween}>
-            <Text style={[styles.value, { color: colors.text }]}>{username}</Text>
+            <Text style={[styles.value, { color: colors.text }]}>{username || 'Loading...'}</Text>
             <Pressable onPress={() => setIsEditingProfile(true)}>
               <Ionicons name="pencil" size={16} color={colors.primary} />
             </Pressable>
@@ -164,8 +187,8 @@ export default function SettingsScreen() {
         )}
 
         <Pressable
-          style={styles.rowBtn}
-          onPress={() => setShowPasswordModal(true)}
+          style={[styles.rowBtn, { opacity: 0.5 }]}
+          onPress={() => Toast.show({ type: 'info', text1: 'Feature Coming Soon', text2: 'Password reset is handled via email.' })}
         >
           <Ionicons name="lock-closed" size={18} color={colors.primary} />
           <Text style={[styles.rowText, { color: colors.text }]}>Change Password</Text>
@@ -298,7 +321,10 @@ export default function SettingsScreen() {
       </View>
 
       {/* LOGOUT */}
-      <Pressable style={[styles.logoutBtn, { backgroundColor: colors.primary }]}>
+      <Pressable
+        style={[styles.logoutBtn, { backgroundColor: colors.error }]}
+        onPress={handleLogout}
+      >
         <Ionicons name="log-out" size={20} color="#fff" />
         <Text style={styles.logoutText}>Logout</Text>
       </Pressable>

@@ -169,27 +169,27 @@ RETURN JSON ARRAY ONLY matching this schema:
 
       const prompt = `You are an automated cooking system controller.
 
-AVAILABLE INGREDIENTS:
+AVAILABLE INGREDIENTS THE USER LIKES:
 ${ingredientList}
 
-Generate 3 DISTINCT recipe options using these ingredients. Return a JSON ARRAY.
+Generate 3 DISTINCT food options that can be made using these ingredients. Return a JSON ARRAY.
 
 RULES:
-1. Each recipe must have a unique "name" and "steps".
-2. **CRITICAL: Each recipe MUST have at least 10 steps.**
+1. Each food option must have a unique "name" and a complete "cooking algorithm" (steps).
+2. **CRITICAL: Each algorithm MUST have at least 10 steps.**
 3. "steps" must be an array of:
    - "instruction": "add ingredient", "stir", or "idle"
    - "ingredientName": exact match from list (only for "add ingredient")
    - "duration": seconds (int)
    - "temperature": 25-200 (int)
    - "stirrerSpeed": 0-10 (int)
-4. To reach the 10-step minimum, use "stir" and "idle" instructions generously. Break down cooking processes into smaller, managed steps (e.g., instead of one long stir, have "stir", "idle", "stir").
+4. Use "stir" and "idle" instructions generously to break down the cooking into a precise, managed sequence.
 
 RETURN JSON ARRAY ONLY matching this schema:
 [
   {
-    "name": "Recipe Name 1",
-    "steps": [{ "instruction": "...", "duration": ... }]
+    "name": "Food Name 1",
+    "steps": [{ "instruction": "...", "duration": ..., "temperature": ..., "stirrerSpeed": ... }]
   },
   ...
 ]`;
@@ -260,6 +260,94 @@ RETURN JSON ARRAY ONLY matching this schema:
 
     } catch (error) {
       console.error('Error generating suggestions:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Generate a full recipe (ingredients + 10+ steps) from a food name
+   */
+  async generateFullRecipe(apiKey: string, foodName: string): Promise<{ ingredients: Ingredient[]; steps: Step[] }> {
+    if (!apiKey) throw new Error('API Key required');
+    if (!foodName) throw new Error('Food name required');
+
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+
+      const prompt = `You are an automated cooking system controller.
+      
+FOOD: ${foodName}
+
+Generate a complete recipe for this dish as a JSON object.
+
+RULES:
+1. "ingredients": Array of objects { "name": string, "amount": number (g/ml), "unit": "g"|"ml"|"pcs", "cup": 1-6 }.
+2. "steps": Array of at least 10 objects. Each must be:
+   - "instruction": "add ingredient", "stir", or "idle"
+   - "ingredientName": exact match from the ingredients array you created (only for "add ingredient")
+   - "duration": seconds (int)
+   - "temperature": 25-200 (int)
+   - "stirrerSpeed": 0-10 (int)
+3. Return ONLY the JSON object.
+
+SCHEMA:
+{
+  "ingredients": [{ "name": "...", "amount": ..., "unit": "...", "cup": ... }],
+  "steps": [{ "instruction": "...", "duration": ..., "temperature": ..., "stirrerSpeed": ... }]
+}`;
+
+      const model = genAI.getGenerativeModel({
+        model: 'gemini-2.0-flash',
+        generationConfig: { responseMimeType: "application/json" }
+      });
+
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const text = response.text();
+      const parsed = JSON.parse(text);
+
+      if (!parsed.ingredients || !parsed.steps) throw new Error('Invalid AI response');
+
+      // Transform ingredients to include unique IDs
+      const ingredients: Ingredient[] = parsed.ingredients.map((ing: any, idx: number) => ({
+        id: Date.now() + idx,
+        name: ing.name,
+        amount: Number(ing.amount) || 100,
+        unit: (ing.unit === 'g' || ing.unit === 'ml' || ing.unit === 'pcs') ? ing.unit : 'g',
+        cup: Math.min(6, Math.max(1, Number(ing.cup) || 1))
+      }));
+
+      // Transform steps
+      const steps: Step[] = parsed.steps.map((step: any, idx: number) => {
+        let instruction = step.instruction;
+        if (!['add ingredient', 'stir', 'idle'].includes(instruction)) instruction = 'idle';
+
+        const safeStep: Step = {
+          id: Date.now() + idx + 100,
+          instruction,
+          duration: Number(step.duration) || 30,
+          temperature: Number(step.temperature) || 25,
+          stirrerSpeed: Number(step.stirrerSpeed) || 0,
+        };
+
+        if (instruction === 'add ingredient') {
+          const match = ingredients.find(i => i.name.toLowerCase() === (step.ingredientName || '').toLowerCase());
+          if (match) {
+            safeStep.ingredientName = match.name;
+            safeStep.amount = match.amount;
+            safeStep.unit = match.unit;
+          } else {
+            safeStep.instruction = 'stir';
+            safeStep.stirrerSpeed = 5;
+          }
+        }
+        return safeStep;
+      });
+
+      return { ingredients, steps };
+
+    } catch (error) {
+      console.error('Error in generateFullRecipe:', error);
       throw error;
     }
   }

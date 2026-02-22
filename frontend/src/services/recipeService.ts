@@ -83,8 +83,8 @@ class RecipeService {
      */
     async createRecipe(recipe: RecipeInsert): Promise<Recipe | null> {
         try {
-            const { data, error } = await supabase
-                .from('recipes')
+            const { data, error } = await (supabase
+                .from('recipes') as any)
                 .insert(recipe)
                 .select()
                 .single();
@@ -106,8 +106,8 @@ class RecipeService {
      */
     async updateRecipe(recipeId: string, updates: RecipeUpdate): Promise<Recipe | null> {
         try {
-            const { data, error } = await supabase
-                .from('recipes')
+            const { data, error } = await (supabase
+                .from('recipes') as any)
                 .update(updates)
                 .eq('recipe_id', recipeId)
                 .select()
@@ -157,8 +157,8 @@ class RecipeService {
         cupIndex?: number
     ): Promise<boolean> {
         try {
-            const { error } = await supabase
-                .from('recipe_ingredients')
+            const { error } = await (supabase
+                .from('recipe_ingredients') as any)
                 .insert({
                     recipe_id: recipeId,
                     ingredient_id: ingredientId,
@@ -211,8 +211,8 @@ class RecipeService {
         cupIndex?: number
     ): Promise<boolean> {
         try {
-            const { error } = await supabase
-                .from('recipe_ingredients')
+            const { error } = await (supabase
+                .from('recipe_ingredients') as any)
                 .update({ amount, cup_index: cupIndex })
                 .eq('recipe_id', recipeId)
                 .eq('ingredient_id', ingredientId);
@@ -240,8 +240,8 @@ class RecipeService {
         targetCup?: number
     ): Promise<boolean> {
         try {
-            const { error } = await supabase
-                .from('cooking_steps')
+            const { error } = await (supabase
+                .from('cooking_steps') as any)
                 .insert({
                     recipe_id: recipeId,
                     action,
@@ -275,8 +275,8 @@ class RecipeService {
         }
     ): Promise<boolean> {
         try {
-            const { error } = await supabase
-                .from('cooking_steps')
+            const { error } = await (supabase
+                .from('cooking_steps') as any)
                 .update(updates)
                 .eq('id', stepId);
 
@@ -341,8 +341,8 @@ class RecipeService {
      */
     async createIngredient(name: string): Promise<Ingredient | null> {
         try {
-            const { data, error } = await supabase
-                .from('ingredients')
+            const { data, error } = await (supabase
+                .from('ingredients') as any)
                 .insert({ name })
                 .select()
                 .single();
@@ -372,8 +372,8 @@ class RecipeService {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error('No user logged in');
 
-            const { error } = await supabase
-                .from('purchases')
+            const { error } = await (supabase
+                .from('purchases') as any)
                 .insert({
                     buyer_id: user.id,
                     recipe_id: recipeId,
@@ -404,14 +404,14 @@ class RecipeService {
             if (!user) throw new Error('No user logged in');
 
             // First get all recipes owned by user
-            const { data: recipes, error: recipeError } = await supabase
-                .from('recipes')
+            const { data: recipes, error: recipeError } = await (supabase
+                .from('recipes') as any)
                 .select('recipe_id')
                 .eq('owner_id', user.id);
 
             if (recipeError) throw recipeError;
 
-            const recipeIds = recipes.map(r => r.recipe_id);
+            const recipeIds = (recipes as any[]).map(r => r.recipe_id);
 
             if (recipeIds.length === 0) return [];
 
@@ -440,8 +440,8 @@ class RecipeService {
      */
     async approvePurchaseRequest(buyerId: string, recipeId: string): Promise<boolean> {
         try {
-            const { error } = await supabase
-                .from('purchases')
+            const { error } = await (supabase
+                .from('purchases') as any)
                 .update({ status: 'approved' })
                 .eq('buyer_id', buyerId)
                 .eq('recipe_id', recipeId);
@@ -462,15 +462,15 @@ class RecipeService {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) return [];
 
-            const { data, error } = await supabase
-                .from('purchases')
+            const { data, error } = await (supabase
+                .from('purchases') as any)
                 .select('recipe_id')
                 .eq('buyer_id', user.id)
                 .eq('status', 'approved');
 
             if (error) throw error;
 
-            return data.map(p => p.recipe_id);
+            return (data as any[]).map(p => p.recipe_id);
         } catch (error) {
             console.error('Error in getPurchasedRecipeIds:', error);
             return [];
@@ -485,8 +485,8 @@ class RecipeService {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error('No user logged in');
 
-            const { error } = await supabase
-                .from('profiles')
+            const { error } = await (supabase
+                .from('profiles') as any)
                 .update({
                     username,
                     updated_at: new Date().toISOString()
@@ -515,10 +515,25 @@ class RecipeService {
                 .eq('id', user.id)
                 .single();
 
-            if (error) throw error;
+            // PGRST116 is the "no rows returned" error for .single()
+            if (error && error.code !== 'PGRST116') throw error;
+
+            const emailName = user.email ? user.email.split('@')[0] : 'chef';
+
+            if (!data) {
+                return {
+                    id: user.id,
+                    username: emailName,
+                    avatar_url: null,
+                    total_cooks: 0,
+                    email: user.email
+                };
+            }
+
             return {
-                ...data,
-                email: user.email // Profiles table might not have email, fetch from auth
+                ...(data as any),
+                username: (data as any).username || emailName,
+                email: user.email
             };
         } catch (error) {
             console.error('Error in getUserProfile:', error);
