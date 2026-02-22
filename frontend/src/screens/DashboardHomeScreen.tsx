@@ -1,9 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+    Dimensions,
+    FlatList,
     Image,
     KeyboardAvoidingView,
     Modal,
@@ -20,8 +23,8 @@ import Toast from 'react-native-toast-message';
 import { usePayment } from '../context/PaymentContext';
 import { useTheme } from '../context/ThemeContext';
 import { supabase } from '../lib/supabase';
-import { Database } from '../types/database.types';
 import { recipeService, RecipeWithDetails } from '../services/recipeService';
+import { Database } from '../types/database.types';
 
 type FilterType = 'all' | 'budget' | 'moderate' | 'premium';
 type RatingFilter = 'all' | '3+' | '4+';
@@ -66,6 +69,33 @@ const RECOMMENDED_RECIPE: RecipeWithDetails = {
     updated_at: new Date().toISOString(),
     profiles: { username: 'Chef Isabella', id: 'chef-isabella', avatar_url: null, total_cooks: 1800, created_at: '', updated_at: '' }
 };
+
+const CAROUSEL_DATA = [
+    {
+        id: '1',
+        title: 'Smart Cooking\nMade Simple',
+        subtitle: 'Automate your favorite recipes with precision.',
+        image: 'https://images.unsplash.com/photo-1556910103-1c02745aae4d?auto=format&fit=crop&q=80',
+        label: 'App Feature'
+    },
+    {
+        id: '2',
+        title: 'Healthy Meals,\nZero Effort',
+        subtitle: 'Discover nutritionist-approved automated meals.',
+        image: 'https://images.unsplash.com/photo-1490645935967-10de6ba17061?auto=format&fit=crop&q=80',
+        label: 'Wellness'
+    },
+    {
+        id: '3',
+        title: 'Join the\nChef Community',
+        subtitle: 'Share your recipes and earn from your skills.',
+        image: 'https://plus.unsplash.com/premium_photo-1683707120438-8249afcf91dc?fm=jpg&q=60&w=3000&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D',
+        label: 'Community'
+    }
+];
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const CAROUSEL_HEIGHT = 200;
 
 export default function DashboardHomeScreen() {
     const { colors } = useTheme();
@@ -113,10 +143,34 @@ export default function DashboardHomeScreen() {
     const [purchasedRecipeIds, setPurchasedRecipeIds] = useState<string[]>([]);
     const [currentUser, setCurrentUser] = useState<any>(null);
 
-    // Load recipes from database
+    // Carousel logic
+    const flatListRef = useRef<FlatList>(null);
+    const [currentIndex, setCurrentIndex] = useState(0);
+
     useEffect(() => {
-        loadRecipes();
-    }, []);
+        const interval = setInterval(() => {
+            if (currentIndex < CAROUSEL_DATA.length - 1) {
+                flatListRef.current?.scrollToIndex({
+                    index: currentIndex + 1,
+                    animated: true,
+                });
+            } else {
+                flatListRef.current?.scrollToIndex({
+                    index: 0,
+                    animated: true,
+                    viewPosition: 0
+                });
+            }
+        }, 5000);
+
+        return () => clearInterval(interval);
+    }, [currentIndex]);
+
+    const onScroll = (event: any) => {
+        const contentOffset = event.nativeEvent.contentOffset.x;
+        const index = Math.round(contentOffset / (SCREEN_WIDTH - 40));
+        setCurrentIndex(index);
+    };
 
     const loadRecipes = async () => {
         setLoadingRecipes(true);
@@ -136,6 +190,57 @@ export default function DashboardHomeScreen() {
             setLoadingRecipes(false);
         }
     };
+
+    // Load recipes when screen comes into focus
+    useFocusEffect(
+        useCallback(() => {
+            loadRecipes();
+        }, [])
+    );
+
+    // Subscribe to recipes changes (Realtime)
+    useEffect(() => {
+        const channel = supabase
+            .channel('public:recipes')
+            .on(
+                'postgres_changes',
+                {
+                    event: 'INSERT',
+                    schema: 'public',
+                    table: 'recipes'
+                },
+                async (payload: any) => {
+                    console.log('New recipe inserted:', payload);
+                    // Fetch the full recipe details including profiles
+                    const { data: newRecipe, error } = await supabase
+                        .from('recipes')
+                        .select(`
+                            *,
+                            ingredients:recipe_ingredients(
+                                *,
+                                ingredient:ingredients(*)
+                            ),
+                            cooking_steps(*),
+                            profiles:owner_id(*)
+                        `)
+                        .eq('recipe_id', payload.new.recipe_id)
+                        .single();
+
+                    if (newRecipe) {
+                        setOthersRecipes((prev: RecipeWithDetails[]) => {
+                            // Avoid duplicates just in case
+                            if (prev.some(r => r.recipe_id === (newRecipe as any).recipe_id)) return prev;
+                            return [newRecipe as RecipeWithDetails, ...prev];
+                        });
+                    }
+                }
+            )
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }, []);
 
     // Subscribe to device_state
     useEffect(() => {
@@ -469,12 +574,49 @@ export default function DashboardHomeScreen() {
     return (
         <View style={{ flex: 1, backgroundColor: colors.background }}>
             <ScrollView style={{ flex: 1, padding: 20 }} showsVerticalScrollIndicator={false}>
-                {/* Welcome */}
-                <View style={styles.section}>
-                    <Text style={[styles.welcome, { color: colors.text }]}>Your Kitchen Command Center 🍳</Text>
-                    <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-                        Monitor your automated cooking and explore delicious recipes
-                    </Text>
+                {/* Hero Carousel */}
+                <View style={[styles.carouselContainer, { marginBottom: 20 }]}>
+                    <FlatList
+                        ref={flatListRef}
+                        data={CAROUSEL_DATA}
+                        horizontal
+                        pagingEnabled
+                        showsHorizontalScrollIndicator={false}
+                        keyExtractor={(item) => item.id}
+                        onScroll={onScroll}
+                        scrollEventThrottle={16}
+                        snapToInterval={SCREEN_WIDTH - 40}
+                        decelerationRate="fast"
+                        renderItem={({ item }) => (
+                            <View style={styles.carouselSlide}>
+                                <Image source={{ uri: item.image }} style={styles.carouselImage} />
+                                <LinearGradient
+                                    colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.8)']}
+                                    style={styles.carouselGradient}
+                                >
+                                    <View style={styles.carouselContent}>
+                                        <View style={[styles.carouselLabel, { backgroundColor: colors.primary }]}>
+                                            <Text style={styles.carouselLabelText}>{item.label}</Text>
+                                        </View>
+                                        <Text style={styles.carouselTitle}>{item.title}</Text>
+                                        <Text style={styles.carouselSubtitle}>{item.subtitle}</Text>
+                                    </View>
+                                </LinearGradient>
+                            </View>
+                        )}
+                    />
+                    {/* Pagination Dots */}
+                    <View style={styles.pagination}>
+                        {CAROUSEL_DATA.map((_, index) => (
+                            <View
+                                key={index}
+                                style={[
+                                    styles.dot,
+                                    { backgroundColor: index === currentIndex ? colors.primary : 'rgba(255,255,255,0.4)' }
+                                ]}
+                            />
+                        ))}
+                    </View>
                 </View>
 
                 {/* Tabs */}
@@ -866,31 +1008,35 @@ export default function DashboardHomeScreen() {
                             </ScrollView>
                         </View>
 
-                        {/* Trending This Week */}
-                        <View style={styles.recipeSection}>
-                            <View style={styles.sectionHeader}>
-                                <View style={styles.trendingHeader}>
-                                    <Text style={[styles.sectionTitle, { color: colors.text }]}>Trending This Week</Text>
-                                    <View style={styles.trendingBadge}>
-                                        <Ionicons name="trending-up" size={12} color="#E53935" />
-                                        <Text style={styles.trendingBadgeText}>HOT</Text>
+                        {/* Trending This Week - Hide during search */}
+                        {!discoverSearch && (
+                            <View style={styles.recipeSection}>
+                                <View style={styles.sectionHeader}>
+                                    <View style={styles.trendingHeader}>
+                                        <Text style={[styles.sectionTitle, { color: colors.text }]}>Trending This Week</Text>
+                                        <View style={styles.trendingBadge}>
+                                            <Ionicons name="trending-up" size={12} color="#E53935" />
+                                            <Text style={styles.trendingBadgeText}>HOT</Text>
+                                        </View>
                                     </View>
                                 </View>
+                                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recipeScroll}>
+                                    {renderRecipeCard(TRENDING_RECIPE, 0, false)}
+                                </ScrollView>
                             </View>
-                            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recipeScroll}>
-                                {renderRecipeCard(TRENDING_RECIPE, 0, false)}
-                            </ScrollView>
-                        </View>
+                        )}
 
-                        {/* Recommended For You */}
-                        <View style={styles.recipeSection}>
-                            <View style={styles.sectionHeader}>
-                                <Text style={[styles.sectionTitle, { color: colors.text }]}>Recommended For You</Text>
+                        {/* Recommended For You - Hide during search */}
+                        {!discoverSearch && (
+                            <View style={styles.recipeSection}>
+                                <View style={styles.sectionHeader}>
+                                    <Text style={[styles.sectionTitle, { color: colors.text }]}>Recommended For You</Text>
+                                </View>
+                                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recipeScroll}>
+                                    {renderRecipeCard(RECOMMENDED_RECIPE, 1, false)}
+                                </ScrollView>
                             </View>
-                            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recipeScroll}>
-                                {renderRecipeCard(RECOMMENDED_RECIPE, 1, false)}
-                            </ScrollView>
-                        </View>
+                        )}
 
                         {/* What Others Are Cooking */}
                         <View style={styles.recipeSection}>
@@ -996,19 +1142,57 @@ export default function DashboardHomeScreen() {
                                         </View>
                                     </View>
 
-                                    {selectedRecipe.price > 0 && (
-                                        <Text style={[styles.detailsPrice, { color: colors.text }]}>${selectedRecipe.price}</Text>
-                                    )}
+                                    {(() => {
+                                        const isFree = selectedRecipe.price === 0;
+                                        const isOwnedByMe = currentUser && currentUser.id === selectedRecipe.owner_id;
+                                        const isPurchased = purchasedRecipeIds.includes(selectedRecipe.recipe_id);
+                                        const alreadyHaveAccess = isOwnedByMe || isPurchased;
 
-                                    <TouchableOpacity
-                                        style={styles.buyButton}
-                                        onPress={() => {
-                                            setSelectedRecipe(null);
-                                            setTimeout(() => setShowPurchaseModal(true), 300); // Wait for close anim
-                                        }}
-                                    >
-                                        <Text style={styles.buyButtonText}>Buy Recipe</Text>
-                                    </TouchableOpacity>
+                                        if (alreadyHaveAccess) {
+                                            return (
+                                                <View style={[styles.buyButton, { backgroundColor: colors.border }]}>
+                                                    <Text style={[styles.buyButtonText, { color: colors.textSecondary }]}>Already in My Recipes</Text>
+                                                </View>
+                                            );
+                                        }
+
+                                        return (
+                                            <TouchableOpacity
+                                                style={[styles.buyButton, { backgroundColor: isFree ? '#4CAF50' : colors.primary }]}
+                                                onPress={async () => {
+                                                    if (isFree) {
+                                                        try {
+                                                            const success = await recipeService.addFreeRecipe(selectedRecipe.recipe_id);
+                                                            if (success) {
+                                                                Toast.show({
+                                                                    type: 'success',
+                                                                    text1: 'Added to My Recipes!',
+                                                                    text2: `"${selectedRecipe.name}" is now available in your collection.`
+                                                                });
+                                                                // Refresh purchased IDs
+                                                                const ids = await recipeService.getPurchasedRecipeIds();
+                                                                setPurchasedRecipeIds(ids);
+                                                                setSelectedRecipe(null);
+                                                            } else {
+                                                                Toast.show({
+                                                                    type: 'error',
+                                                                    text1: 'Failed to add recipe',
+                                                                    text2: 'Please try again later.'
+                                                                });
+                                                            }
+                                                        } catch (error) {
+                                                            console.error('Add free recipe error:', error);
+                                                        }
+                                                    } else {
+                                                        setSelectedRecipe(null);
+                                                        setTimeout(() => setShowPurchaseModal(true), 300);
+                                                    }
+                                                }}
+                                            >
+                                                <Text style={styles.buyButtonText}>{isFree ? 'Add Recipe' : 'Buy Recipe'}</Text>
+                                            </TouchableOpacity>
+                                        );
+                                    })()}
 
                                     <TouchableOpacity
                                         style={[styles.buyButton, { backgroundColor: 'transparent', marginTop: 10, borderWidth: 1, borderColor: colors.border }]}
@@ -2048,5 +2232,66 @@ const styles = StyleSheet.create({
         width: 40,
         height: 40,
         borderRadius: 8,
+    },
+
+    // Carousel Styles
+    carouselContainer: {
+        height: CAROUSEL_HEIGHT,
+        width: SCREEN_WIDTH - 40,
+        borderRadius: 20,
+        overflow: 'hidden',
+        backgroundColor: '#1E1E26',
+    },
+    carouselSlide: {
+        width: SCREEN_WIDTH - 40,
+        height: CAROUSEL_HEIGHT,
+    },
+    carouselImage: {
+        width: '100%',
+        height: '100%',
+        position: 'absolute',
+    },
+    carouselGradient: {
+        flex: 1,
+        justifyContent: 'flex-end',
+        padding: 20,
+    },
+    carouselContent: {
+        gap: 6,
+    },
+    carouselLabel: {
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        borderRadius: 12,
+        alignSelf: 'flex-start',
+    },
+    carouselLabelText: {
+        color: '#fff',
+        fontSize: 10,
+        fontWeight: '800',
+        textTransform: 'uppercase',
+    },
+    carouselTitle: {
+        color: '#fff',
+        fontSize: 22,
+        fontWeight: '900',
+        lineHeight: 28,
+    },
+    carouselSubtitle: {
+        color: 'rgba(255,255,255,0.8)',
+        fontSize: 13,
+        fontWeight: '500',
+    },
+    pagination: {
+        flexDirection: 'row',
+        position: 'absolute',
+        bottom: 12,
+        alignSelf: 'center',
+        gap: 6,
+    },
+    dot: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
     },
 });

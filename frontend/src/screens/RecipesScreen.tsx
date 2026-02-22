@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -16,7 +17,6 @@ import Toast from 'react-native-toast-message';
 import { useTheme } from '../context/ThemeContext';
 import { supabase } from '../lib/supabase';
 import { recipeService, RecipeWithDetails } from '../services/recipeService';
-import * as ImagePicker from 'expo-image-picker';
 
 interface Step {
   id: number;
@@ -223,10 +223,13 @@ export default function RecipesScreen() {
 
   // Filtered recipes for list view - MUST be before any conditional returns
   const filteredRecipes = useMemo(() => {
-    return recipes.filter(r =>
-      r.name.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  }, [searchQuery, recipes]);
+    return recipes.filter(r => {
+      const matchesSearch = r.name.toLowerCase().includes(searchQuery.toLowerCase());
+      const isOwnedByMe = currentUser && currentUser.id === r.owner_id;
+      const isPurchased = purchasedRecipeIds.includes(r.recipe_id);
+      return matchesSearch && (isOwnedByMe || isPurchased);
+    });
+  }, [searchQuery, recipes, currentUser, purchasedRecipeIds]);
 
   const maxLengthCreatorCheck = (ownerId: string) => {
     return currentUser && currentUser.id === ownerId;

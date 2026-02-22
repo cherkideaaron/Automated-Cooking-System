@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { DrawerContentScrollView, DrawerItem, DrawerItemList } from '@react-navigation/drawer';
 import { useRouter } from 'expo-router';
 import { Drawer } from 'expo-router/drawer';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 function CustomDrawerContent(props: any) {
@@ -43,7 +43,44 @@ export default function DashboardLayout() {
     return (
         <PaymentProvider>
             <GestureHandlerRootView style={{ flex: 1 }}>
-                <Drawer drawerContent={(props) => <CustomDrawerContent {...props} />}>
+                <Drawer
+                    drawerContent={(props) => <CustomDrawerContent {...props} />}
+                    screenOptions={{
+                        headerRight: () => (
+                            <View style={{ flexDirection: 'row', alignItems: 'center', paddingRight: 16, gap: 16 }}>
+                                <TouchableOpacity style={{ position: 'relative' }}>
+                                    <Ionicons name="notifications-outline" size={24} color="#fff" />
+                                    <View style={{
+                                        position: 'absolute',
+                                        top: -2,
+                                        right: -2,
+                                        backgroundColor: '#E53935',
+                                        width: 10,
+                                        height: 10,
+                                        borderRadius: 5,
+                                        borderWidth: 1.5,
+                                        borderColor: '#15151C'
+                                    }} />
+                                </TouchableOpacity>
+                                <TouchableOpacity>
+                                    <Ionicons name="person-circle-outline" size={28} color="#fff" />
+                                </TouchableOpacity>
+                            </View>
+                        ),
+                        headerStyle: {
+                            backgroundColor: '#15151C',
+                            elevation: 0,
+                            shadowOpacity: 0,
+                            borderBottomWidth: 1,
+                            borderBottomColor: '#2a2a2a',
+                        },
+                        headerTintColor: '#fff',
+                        headerTitleStyle: {
+                            fontWeight: '700',
+                            fontSize: 18,
+                        }
+                    }}
+                >
                     <Drawer.Screen
                         name="(tabs)"
                         options={{
