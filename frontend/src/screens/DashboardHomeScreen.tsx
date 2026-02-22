@@ -156,6 +156,16 @@ export default function DashboardHomeScreen() {
                     .update({ status: 'idle' })
                     .eq('id', deviceId || 'device_001');
 
+                // Add notification
+                if (currentUser) {
+                    await (supabase.from('notifications') as any).insert({
+                        user_id: currentUser.id,
+                        message: `Cooking for "${activeSession?.recipes?.name || 'Recipe'}" was stopped manualy.`,
+                        type: 'warning',
+                        is_read: false
+                    });
+                }
+
                 setStoveStatus('idle');
                 setIsCooking(false);
             } else {
@@ -331,7 +341,7 @@ export default function DashboardHomeScreen() {
             console.log('Fetching active session...');
             const { data, error } = await supabase
                 .from('cooking_sessions')
-                .select('*')
+                .select('*, recipes(name)')
                 .eq('status', 'active')
                 .order('created_at', { ascending: false })
                 .limit(1)
@@ -426,6 +436,16 @@ export default function DashboardHomeScreen() {
                                 .from('device_state')
                                 .update({ status: 'idle' })
                                 .eq('id', deviceId || 'device_001');
+
+                            // Add notification
+                            if (currentUser) {
+                                await (supabase.from('notifications') as any).insert({
+                                    user_id: currentUser.id,
+                                    message: `Your meal "${activeSession?.recipes?.name || 'Recipe'}" is ready!`,
+                                    type: 'info',
+                                    is_read: false
+                                });
+                            }
                         }
                     }
                 } else {
@@ -549,6 +569,16 @@ export default function DashboardHomeScreen() {
                 .from('device_state')
                 .update({ status: 'idle' })
                 .eq('id', deviceId || 'device_001');
+
+            // Add notification
+            if (currentUser) {
+                await (supabase.from('notifications') as any).insert({
+                    user_id: currentUser.id,
+                    message: `Cooking for "${activeSession?.recipes?.name || 'Recipe'}" was stopped.`,
+                    type: 'warning',
+                    is_read: false
+                });
+            }
 
             setStoveStatus('idle'); // Optimistic local state update
             setIsCooking(false);

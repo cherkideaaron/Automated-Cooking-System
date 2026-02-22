@@ -2,8 +2,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { DrawerContentScrollView, DrawerItem, DrawerItemList } from '@react-navigation/drawer';
 import { useRouter } from 'expo-router';
 import { Drawer } from 'expo-router/drawer';
+import { useEffect, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { supabase } from '../../src/lib/supabase';
 
 function CustomDrawerContent(props: any) {
     const router = useRouter();
@@ -40,6 +42,47 @@ function CustomDrawerContent(props: any) {
 import { PaymentProvider } from '../../src/context/PaymentContext';
 
 export default function DashboardLayout() {
+    const router = useRouter();
+    const [unreadCount, setUnreadCount] = useState(0);
+
+    useEffect(() => {
+        fetchUnreadCount();
+
+        const subscription = supabase
+            .channel('unread-notifications')
+            .on(
+                'postgres_changes',
+                {
+                    event: '*',
+                    schema: 'public',
+                    table: 'notifications'
+                },
+                () => {
+                    fetchUnreadCount();
+                }
+            )
+            .subscribe();
+
+        return () => {
+            subscription.unsubscribe();
+        };
+    }, []);
+
+    const fetchUnreadCount = async () => {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+
+        const { count, error } = await supabase
+            .from('notifications')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', user.id)
+            .eq('is_read', false);
+
+        if (!error && count !== null) {
+            setUnreadCount(count);
+        }
+    };
+
     return (
         <PaymentProvider>
             <GestureHandlerRootView style={{ flex: 1 }}>
@@ -48,19 +91,31 @@ export default function DashboardLayout() {
                     screenOptions={{
                         headerRight: () => (
                             <View style={{ flexDirection: 'row', alignItems: 'center', paddingRight: 16, gap: 16 }}>
-                                <TouchableOpacity style={{ position: 'relative' }}>
+                                <TouchableOpacity
+                                    style={{ position: 'relative' }}
+                                    onPress={() => router.push('/notifications')}
+                                >
                                     <Ionicons name="notifications-outline" size={24} color="#fff" />
-                                    <View style={{
-                                        position: 'absolute',
-                                        top: -2,
-                                        right: -2,
-                                        backgroundColor: '#E53935',
-                                        width: 10,
-                                        height: 10,
-                                        borderRadius: 5,
-                                        borderWidth: 1.5,
-                                        borderColor: '#15151C'
-                                    }} />
+                                    {unreadCount > 0 && (
+                                        <View style={{
+                                            position: 'absolute',
+                                            top: -4,
+                                            right: -4,
+                                            backgroundColor: '#E53935',
+                                            minWidth: 16,
+                                            height: 16,
+                                            borderRadius: 8,
+                                            borderWidth: 1.5,
+                                            borderColor: '#15151C',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            paddingHorizontal: 2
+                                        }}>
+                                            <Text style={{ color: '#fff', fontSize: 9, fontWeight: 'bold' }}>
+                                                {unreadCount > 9 ? '9+' : unreadCount}
+                                            </Text>
+                                        </View>
+                                    )}
                                 </TouchableOpacity>
                                 <TouchableOpacity>
                                     <Ionicons name="person-circle-outline" size={28} color="#fff" />

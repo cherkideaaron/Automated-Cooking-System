@@ -1,6 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -8,74 +10,96 @@ import {
   View,
 } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../lib/supabase';
 
 type Category = 'emergency' | 'warning' | 'info';
 
-interface Notification {
+interface DbNotification {
   id: string;
-  title: string;
-  description: string;
-  category: Category;
-  timestamp: string;
-  action?: string;
+  user_id: string;
+  message: string;
+  type: Category;
+  is_read: boolean;
+  created_at: string;
 }
-
-const notifications: Notification[] = [
-  {
-    id: '1',
-    title: 'Emergency Stop Activated',
-    description: 'Cooking session was interrupted due to emergency stop button',
-    category: 'emergency',
-    timestamp: '2 hours ago',
-    action: 'Stove turned off immediately',
-  },
-  {
-    id: '2',
-    title: 'High Temperature Warning',
-    description: 'Temperature exceeded safe threshold during cooking',
-    category: 'warning',
-    timestamp: '5 hours ago',
-    action: 'System reduced temperature automatically',
-  },
-  {
-    id: '3',
-    title: 'Cooking Complete',
-    description: 'Your Pasta Carbonara is ready to serve',
-    category: 'info',
-    timestamp: '1 day ago',
-    action: 'Session saved to history',
-  },
-  {
-    id: '4',
-    title: 'System Update Available',
-    description: 'A new firmware update is available for your machine',
-    category: 'info',
-    timestamp: '2 days ago',
-    action: 'Update available in settings',
-  },
-  {
-    id: '5',
-    title: 'Sensor Calibration Needed',
-    description: 'Temperature sensor requires recalibration for accuracy',
-    category: 'warning',
-    timestamp: '3 days ago',
-    action: 'Calibration guide available',
-  },
-];
 
 export default function NotificationsScreen() {
   const { colors } = useTheme();
   const [filter, setFilter] = useState<'all' | Category>('all');
+  const [notifications, setNotifications] = useState<DbNotification[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchNotifications = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const { data, error } = await (supabase
+      .from('notifications') as any)
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (!error && data) {
+      setNotifications(data as DbNotification[]);
+    }
+    setLoading(false);
+  };
+
+  const markAllAsRead = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const { error } = await (supabase
+      .from('notifications') as any)
+      .update({ is_read: true })
+      .eq('user_id', user.id)
+      .eq('is_read', false);
+
+    if (!error) {
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+    }
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchNotifications();
+      markAllAsRead();
+    }, [])
+  );
+
+  useEffect(() => {
+    const subscription = supabase
+      .channel('realtime-notifications')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'notifications'
+        },
+        (payload) => {
+          fetchNotifications();
+          // We mark as read only if the screen is currently focused
+          // But since we are inside NotificationsScreen, we expect the user to see it
+          markAllAsRead();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
 
   const filtered =
     filter === 'all'
       ? notifications
-      : notifications.filter((n) => n.category === filter);
+      : notifications.filter((n) => n.type === filter);
 
   const iconFor = (category: Category) => {
-    if (category === 'emergency') return 'alert-circle';
-    if (category === 'warning') return 'warning';
-    return 'information-circle';
+    if (category === 'emergency') return 'alert-circle' as const;
+    if (category === 'warning') return 'warning' as const;
+    return 'information-circle' as const;
   };
 
   const colorFor = (category: Category) => {
@@ -83,6 +107,29 @@ export default function NotificationsScreen() {
     if (category === 'warning') return '#FBC02D';
     return '#42A5F5';
   };
+
+  const formatTimestamp = (timestamp: string) => {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+
+    const minutes = Math.floor(diff / 60000);
+    if (minutes < 1) return 'Just now';
+    if (minutes < 60) return `${minutes}m ago`;
+
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+
+    return date.toLocaleDateString();
+  };
+
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.centered, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color="#E53935" />
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.background }]} showsVerticalScrollIndicator={false}>
@@ -133,27 +180,26 @@ export default function NotificationsScreen() {
             key={item.id}
             style={[
               styles.card,
-              { backgroundColor: colors.card, borderLeftColor: colorFor(item.category) },
+              { backgroundColor: colors.card, borderLeftColor: colorFor(item.type) },
             ]}
           >
             <Ionicons
-              name={iconFor(item.category)}
+              name={iconFor(item.type)}
               size={22}
-              color={colorFor(item.category)}
+              color={colorFor(item.type)}
               style={{ marginTop: 4 }}
             />
 
             <View style={{ flex: 1 }}>
-              <Text style={[styles.cardTitle, { color: colors.text }]}>{item.title}</Text>
-              <Text style={[styles.cardDesc, { color: colors.textSecondary }]}>{item.description}</Text>
-
-              {item.action && (
-                <Text style={[styles.cardAction, { color: colors.textSecondary }]}>
-                  Action: {item.action}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={[styles.cardTitle, { color: colors.text }]}>
+                  {item.type === 'emergency' ? 'Emergency' : item.type === 'warning' ? 'Warning' : 'Info'}
                 </Text>
-              )}
+                {!item.is_read && <View style={styles.unreadDot} />}
+              </View>
+              <Text style={[styles.cardDesc, { color: colors.textSecondary }]}>{item.message}</Text>
 
-              <Text style={styles.time}>{item.timestamp}</Text>
+              <Text style={styles.time}>{formatTimestamp(item.created_at)}</Text>
             </View>
           </View>
         ))
@@ -169,6 +215,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0B0B0F',
     padding: 16,
+  },
+
+  centered: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   header: {
@@ -247,5 +298,12 @@ const styles = StyleSheet.create({
   emptyText: {
     color: '#777',
     marginTop: 10,
+  },
+
+  unreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#E53935',
   },
 });

@@ -657,6 +657,16 @@ export default function RecipesScreen() {
                       .update({ status: 'stopped' } as any)
                       .eq('status', 'active');
 
+                    // Add notification
+                    if (currentUser) {
+                      await (supabase.from('notifications') as any).insert({
+                        user_id: currentUser.id,
+                        message: `Cooking for "${selectedRecipe.name}" was stopped.`,
+                        type: 'warning',
+                        is_read: false
+                      });
+                    }
+
                     Toast.show({
                       type: 'success',
                       text1: 'Cooking Stopped',

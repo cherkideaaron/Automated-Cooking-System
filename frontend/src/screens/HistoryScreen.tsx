@@ -1,33 +1,125 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
+import { supabase } from '../lib/supabase';
 
 interface CookingSession {
   id: string;
   foodName: string;
   date: string;
   duration: number;
-  status: 'completed' | 'interrupted';
+  status: 'completed' | 'stopped';
 }
-
-const mockHistory: CookingSession[] = [
-  { id: '1', foodName: 'Pasta Carbonara', date: '2024-01-20', duration: 25, status: 'completed' },
-  { id: '2', foodName: 'Vegetable Stir Fry', date: '2024-01-19', duration: 15, status: 'completed' },
-  { id: '3', foodName: 'Rice Pilaf', date: '2024-01-18', duration: 30, status: 'completed' },
-  { id: '4', foodName: 'Soup', date: '2024-01-17', duration: 40, status: 'interrupted' },
-  { id: '5', foodName: 'Grilled Vegetables', date: '2024-01-16', duration: 20, status: 'completed' },
-];
 
 export default function HistoryScreen() {
   const { colors } = useTheme();
   const router = useRouter();
+  const [history, setHistory] = useState<CookingSession[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [sessionToDelete, setSessionToDelete] = useState<{ id: string; name: string } | null>(null);
 
-  const stats = {
-    mostCooked: 'Pasta Carbonara',
-    totalTime: mockHistory.reduce((acc, s) => acc + s.duration, 0),
-    cookingCount: mockHistory.length,
+  // Use focus effect to ensure history is updated every time we navigate here
+  useFocusEffect(
+    useCallback(() => {
+      fetchHistory();
+    }, [])
+  );
+
+  const fetchHistory = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('cooking_sessions')
+        .select(`
+          id,
+          status,
+          created_at,
+          steps,
+          recipes (
+            name
+          )
+        `)
+        .neq('status', 'active')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      if (data) {
+        const transformed: CookingSession[] = (data as any[]).map(session => {
+          const steps = session.steps as any[] || [];
+          const totalDuration = steps.reduce((acc, step) => acc + (step.duration || 0), 0);
+
+          return {
+            id: session.id,
+            foodName: session.recipes?.name || 'Deleted Recipe',
+            date: session.created_at,
+            duration: Math.round(totalDuration / 60),
+            status: session.status as 'completed' | 'stopped'
+          };
+        });
+        setHistory(transformed);
+      }
+    } catch (err) {
+      console.error('Error fetching history:', err);
+    } finally {
+      setLoading(false);
+    }
   };
+
+  const handleDeleteSession = async () => {
+    if (!sessionToDelete) return;
+
+    try {
+      const { error } = await supabase
+        .from('cooking_sessions')
+        .delete()
+        .eq('id', sessionToDelete.id);
+
+      if (error) throw error;
+
+      // Optimistic local update
+      setHistory(prev => prev.filter(s => s.id !== sessionToDelete.id));
+      setSessionToDelete(null);
+    } catch (err) {
+      console.error('Error deleting history:', err);
+      // We could use a toast here if available, but for now we'll just log
+    }
+  };
+
+  const calculateStats = () => {
+    if (history.length === 0) return { mostCooked: 'None', totalTime: 0, cookingCount: 0 };
+
+    const totalTime = history.reduce((acc, s) => acc + s.duration, 0);
+    const cookingCount = history.length;
+
+    // Find most cooked
+    const frequency: Record<string, number> = {};
+    history.forEach(s => {
+      frequency[s.foodName] = (frequency[s.foodName] || 0) + 1;
+    });
+
+    let mostCooked = 'None';
+    let max = 0;
+    Object.keys(frequency).forEach(name => {
+      if (frequency[name] > max) {
+        max = frequency[name];
+        mostCooked = name;
+      }
+    });
+
+    return { mostCooked, totalTime, cookingCount };
+  };
+
+  const stats = calculateStats();
+
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.centered, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color="#E53935" />
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.background }]} showsVerticalScrollIndicator={false}>
@@ -58,51 +150,109 @@ export default function HistoryScreen() {
       {/* HISTORY LIST */}
       <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Past Sessions</Text>
 
-      {mockHistory.map((session) => {
-        const isCompleted = session.status === 'completed';
+      {history.length === 0 ? (
+        <View style={styles.emptyCard}>
+          <Ionicons name="restaurant-outline" size={48} color="#444" />
+          <Text style={styles.emptyText}>No history yet.</Text>
+        </View>
+      ) : (
+        history.map((session) => {
+          const isCompleted = session.status === 'completed';
 
-        return (
-          <Pressable
-            key={session.id}
-            style={[styles.historyCard, { backgroundColor: colors.card }]}
-            onPress={() => router.push({ pathname: '/recipes', params: { search: session.foodName } })}
-          >
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.foodName, { color: colors.text }]}>{session.foodName}</Text>
+          return (
+            <Pressable
+              key={session.id}
+              style={[styles.historyCard, { backgroundColor: colors.card }]}
+              onPress={() => router.push({ pathname: '/recipes', params: { search: session.foodName } })}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.foodName, { color: colors.text }]}>{session.foodName}</Text>
 
-              <Text style={[styles.dateText, { color: colors.textSecondary }]}>
-                {new Date(session.date).toLocaleDateString('en-US', {
-                  month: 'short',
-                  day: 'numeric',
-                  year: 'numeric',
-                })}
-              </Text>
+                <Text style={[styles.dateText, { color: colors.textSecondary }]}>
+                  {new Date(session.date).toLocaleDateString('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                    year: 'numeric',
+                  })}
+                </Text>
 
-              <Text style={[styles.durationText, { color: colors.textSecondary }]}>
-                Duration: {session.duration} min
-              </Text>
-            </View>
+                <View style={styles.sessionDetailsRow}>
+                  <Text style={[styles.durationText, { color: colors.textSecondary }]}>
+                    Duration: {session.duration} min
+                  </Text>
 
-            <View style={styles.statusRow}>
-              <Ionicons
-                name={isCompleted ? 'checkmark-circle' : 'close-circle'}
-                size={22}
-                color={isCompleted ? '#4CAF50' : '#E53935'}
-              />
-              <Text
-                style={[
-                  styles.statusText,
-                  { color: isCompleted ? '#4CAF50' : '#E53935' },
-                ]}
-              >
-                {isCompleted ? 'Success' : 'Stopped'}
-              </Text>
-            </View>
-          </Pressable>
-        );
-      })}
+                  <View style={styles.statusRow}>
+                    <Ionicons
+                      name={isCompleted ? 'checkmark-circle' : 'close-circle'}
+                      size={16}
+                      color={isCompleted ? '#4CAF50' : '#E53935'}
+                    />
+                    <Text
+                      style={[
+                        styles.statusText,
+                        { color: isCompleted ? '#4CAF50' : '#E53935' },
+                      ]}
+                    >
+                      {isCompleted ? 'Success' : 'Stopped'}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              <View style={styles.rightContent}>
+                <TouchableOpacity
+                  onPress={() => setSessionToDelete({ id: session.id, name: session.foodName })}
+                  style={[styles.deleteButton, { backgroundColor: colors.background }]}
+                >
+                  <Ionicons name="trash-outline" size={18} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+            </Pressable>
+          );
+        })
+      )}
 
       <View style={{ height: 40 }} />
+
+      {/* DELETE CONFIRMATION MODAL */}
+      <Modal
+        visible={!!sessionToDelete}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSessionToDelete(null)}
+      >
+        <View style={styles.confirmModalOverlay}>
+          <View style={[styles.confirmModalContent, { backgroundColor: colors.card }]}>
+            <View style={styles.modalIcon}>
+              <Ionicons name="trash" size={48} color="#E53935" />
+            </View>
+
+            <Text style={[styles.confirmModalTitle, { color: colors.text }]}>
+              Delete History
+            </Text>
+
+            <Text style={[styles.confirmModalMessage, { color: colors.textSecondary }]}>
+              Are you sure you want to remove "{sessionToDelete?.name}" from your history?
+            </Text>
+
+            <View style={styles.confirmModalButtons}>
+              <Pressable
+                onPress={() => setSessionToDelete(null)}
+                style={[styles.confirmModalButton, styles.modalButtonCancel, { backgroundColor: colors.background }]}
+              >
+                <Text style={[styles.confirmModalButtonText, { color: colors.text }]}>Cancel</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={handleDeleteSession}
+                style={[styles.confirmModalButton, styles.modalButtonConfirm]}
+              >
+                <Text style={[styles.confirmModalButtonText, styles.modalButtonTextConfirm]}>Delete</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -112,6 +262,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0B0B0F',
     padding: 16,
+  },
+
+  centered: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   pageTitle: {
@@ -190,7 +345,18 @@ const styles = StyleSheet.create({
   durationText: {
     color: '#aaa',
     fontSize: 13,
-    marginTop: 4,
+  },
+
+  sessionDetailsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 6,
+  },
+
+  rightContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   statusRow: {
@@ -202,5 +368,92 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 13,
     fontWeight: '700',
+  },
+
+  deleteButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  emptyCard: {
+    backgroundColor: '#16161E',
+    borderRadius: 16,
+    padding: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 10,
+  },
+
+  emptyText: {
+    color: '#777',
+    fontSize: 15,
+    marginTop: 12,
+    fontWeight: '600',
+  },
+
+  // Confirm Modal Styles
+  confirmModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  confirmModalContent: {
+    borderRadius: 24,
+    padding: 24,
+    width: '100%',
+    maxWidth: 400,
+    alignItems: 'center',
+    // Shadow for iOS
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    // Elevation for Android
+    elevation: 5,
+  },
+  modalIcon: {
+    marginBottom: 16,
+  },
+  confirmModalTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  confirmModalMessage: {
+    fontSize: 15,
+    textAlign: 'center',
+    marginBottom: 28,
+    lineHeight: 22,
+  },
+  confirmModalButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%',
+  },
+  confirmModalButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 14,
+    alignItems: 'center',
+  },
+  modalButtonCancel: {
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  modalButtonConfirm: {
+    backgroundColor: '#E53935',
+  },
+  confirmModalButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  modalButtonTextConfirm: {
+    color: '#fff',
   },
 });
