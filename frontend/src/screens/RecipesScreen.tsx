@@ -956,7 +956,16 @@ export default function RecipesScreen() {
                           recipe_id: selectedRecipe.recipe_id,
                           status: 'active',
                           current_step: 0,
-                          steps: scaledSteps // Store the scaled steps with ingredients
+                          steps: scaledSteps.map(step => ({
+                            id: step.id,
+                            action: step.instruction === 'add ingredient' ? 'add_ingredient' : step.instruction,
+                            duration: step.duration,
+                            target_cup: ingredients.find(i => i.name === step.ingredientName)?.cup || null,
+                            temperature: step.temperature,
+                            stirrerSpeed: step.stirrerSpeed,
+                            amount: step.currentIngredient?.amount,
+                            unit: step.currentIngredient?.unit,
+                          }))
                         });
 
                       if (error) throw error;
