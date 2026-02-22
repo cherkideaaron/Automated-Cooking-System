@@ -137,6 +137,42 @@ export default function DashboardHomeScreen() {
     const [totalStepsCount, setTotalStepsCount] = useState(0);
     const [cookingProgress, setCookingProgress] = useState(0);
     const [remainingTime, setRemainingTime] = useState(0);
+    const [isProcessingToggle, setIsProcessingToggle] = useState(false);
+
+    const handleToggleCooking = async (value: boolean) => {
+        if (isProcessingToggle) return;
+        setIsProcessingToggle(true);
+
+        try {
+            if (!value) {
+                // Turn OFF: Set stove to idle and stop active sessions
+                await supabase
+                    .from('cooking_sessions')
+                    .update({ status: 'stopped' })
+                    .eq('status', 'active');
+
+                await supabase
+                    .from('device_state')
+                    .update({ status: 'idle' })
+                    .eq('id', deviceId || 'device_001');
+
+                setStoveStatus('idle');
+                setIsCooking(false);
+            } else {
+                // Turn ON: Just local state for now, as real sessions start from recipes
+                setIsCooking(true);
+            }
+        } catch (error) {
+            console.error('Error toggling cooking status:', error);
+            Toast.show({
+                type: 'error',
+                text1: 'Sync Error',
+                text2: 'Failed to update cooking status'
+            });
+        } finally {
+            setIsProcessingToggle(false);
+        }
+    };
 
     // Real recipe data from database
     const [othersRecipes, setOthersRecipes] = useState<RecipeWithDetails[]>([]);
@@ -389,7 +425,7 @@ export default function DashboardHomeScreen() {
                             await supabase
                                 .from('device_state')
                                 .update({ status: 'idle' })
-                                .eq('id', 'device_001'); // Assuming fixed ID for now
+                                .eq('id', deviceId || 'device_001');
                         }
                     }
                 } else {
@@ -760,7 +796,8 @@ export default function DashboardHomeScreen() {
                             </View>
                             <Switch
                                 value={isCooking}
-                                onValueChange={setIsCooking}
+                                onValueChange={handleToggleCooking}
+                                disabled={isProcessingToggle}
                                 trackColor={{ false: '#3a3a3a', true: '#E5393580' }}
                                 thumbColor={isCooking ? '#E53935' : '#f4f3f4'}
                             />

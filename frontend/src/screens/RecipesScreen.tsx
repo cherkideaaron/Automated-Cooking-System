@@ -91,20 +91,25 @@ export default function RecipesScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showIngredientDropdown, setShowIngredientDropdown] = useState(false);
   const [stoveStatus, setStoveStatus] = useState<'idle' | 'cooking' | 'paused' | 'error'>('idle');
+  const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [hasActiveSession, setHasActiveSession] = useState(false);
 
   const params = useLocalSearchParams();
+  const isCookingActive = (stoveStatus === 'cooking' || stoveStatus === 'paused') && hasActiveSession;
 
   // Fetch recipes from database on mount
   useEffect(() => {
     checkUser();
     loadRecipes();
+    checkStoveStatus();
+    checkActiveSession();
   }, []);
 
   const checkUser = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     setCurrentUser(user);
     if (user) {
-      const ids = await recipeService.getPurchasedRecipeIds();
+      const ids = await (recipeService.getPurchasedRecipeIds() as any);
       setPurchasedRecipeIds(ids);
     }
   };
@@ -112,7 +117,7 @@ export default function RecipesScreen() {
   const loadRecipes = async () => {
     setLoading(true);
     try {
-      const data = await recipeService.getAllRecipes();
+      const data = await (recipeService.getAllRecipes() as any);
       setRecipes(data);
     } catch (error) {
       console.error('Error loading recipes:', error);
@@ -126,6 +131,16 @@ export default function RecipesScreen() {
     }
   };
 
+  const checkActiveSession = async () => {
+    const { data } = await supabase
+      .from('cooking_sessions')
+      .select('id')
+      .eq('status', 'active')
+      .maybeSingle();
+
+    setHasActiveSession(!!data);
+  };
+
   useEffect(() => {
     if (params.search) {
       setSearchQuery(params.search as string);
@@ -134,52 +149,103 @@ export default function RecipesScreen() {
 
   useEffect(() => {
     if (params.recipeId && recipes.length > 0) {
-      const target = recipes.find(r => r.recipe_id === params.recipeId);
+      if (isCookingActive) {
+        Toast.show({
+          type: 'info',
+          text1: 'Cooking in progress',
+          text2: 'Please stop current session to select a new recipe.',
+          position: 'bottom'
+        });
+        return;
+      }
+      const target = (recipes as any[]).find(r => r.recipe_id === params.recipeId);
       if (target) {
-        setSelectedRecipe(target);
+        setSelectedRecipe(target as any);
       }
     }
-  }, [params.recipeId, recipes]);
+  }, [params.recipeId, recipes, isCookingActive]);
+
+  // Secondary guard: If cooking starts while we are on this screen, clear any detail view
+  useEffect(() => {
+    if (isCookingActive && selectedRecipe) {
+      setSelectedRecipe(null);
+      Toast.show({
+        type: 'info',
+        text1: 'Cooking in progress',
+        text2: 'Please stop current session to select a new recipe.',
+        position: 'bottom'
+      });
+    }
+  }, [isCookingActive]);
 
   // Handle screen focus: Reset recipe selection and check stove status
   useFocusEffect(
     useCallback(() => {
       setSelectedRecipe(null);
       checkStoveStatus();
+      checkActiveSession();
     }, [])
   );
 
   const checkStoveStatus = async () => {
-    const { data } = await supabase
-      .from('device_state')
-      .select('status')
-      .eq('id', 'device_001')
+    const { data } = await (supabase
+      .from('device_state') as any)
+      .select('id, status')
+      .limit(1)
       .maybeSingle();
 
     if (data) {
-      setStoveStatus(data.status);
+      console.log('RecipesScreen: Found device status:', (data as any).status);
+      setDeviceId((data as any).id);
+      setStoveStatus((data as any).status);
     }
   };
 
-  // Subscribe to device status
+  // Subscribe to device and session status
   useEffect(() => {
-    const channel = supabase
+    if (!deviceId) return;
+
+    const deviceChannel = supabase
       .channel('recipe_screen_stove_status')
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'device_state', filter: 'id=eq.device_001' },
-        (payload) => {
-          setStoveStatus(payload.new.status);
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'device_state'
+        },
+        (payload: any) => {
+          console.log('RecipesScreen: Device update:', payload.new?.status);
+          const newStatus = payload.new?.status;
+          if (newStatus) {
+            setStoveStatus(newStatus);
+          }
+        }
+      )
+      .subscribe();
+
+    const sessionChannel = supabase
+      .channel('recipe_screen_session_status')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'cooking_sessions'
+        },
+        (payload: any) => {
+          console.log('RecipesScreen: Session update:', payload.eventType, payload.new?.status);
+          checkActiveSession(); // Re-fetch for accuracy
         }
       )
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(deviceChannel);
+      supabase.removeChannel(sessionChannel);
     };
-  }, []);
+  }, [deviceId]);
 
-  const isCookingActive = stoveStatus === 'cooking' || stoveStatus === 'paused';
 
   useEffect(() => {
     if (selectedRecipe) {
@@ -226,7 +292,7 @@ export default function RecipesScreen() {
     let currentIng: { name: string; amount: number; unit: string } | null = null;
 
     return steps.map(step => {
-      const scaledDuration = scaleValue(step.duration, 1); // servings is always 1 for now
+      const scaledDuration = scaleValue((step as any).duration, 1); // servings is always 1 for now
 
       // If step has a manual amount, use it (scaled)
       if (step.amount !== undefined) {
@@ -256,7 +322,7 @@ export default function RecipesScreen() {
 
   const scaledIngredients = useMemo(() => {
     if (!selectedRecipe) return [];
-    return ingredients.map(ing => ({
+    return (ingredients as any[]).map(ing => ({
       ...ing,
       amount: scaleValue(ing.amount, 1)
     }));
@@ -555,7 +621,7 @@ export default function RecipesScreen() {
               {scaledIngredients.map((ing) => (
                 <Pressable
                   key={ing.id}
-                  onPress={() => setEditingIngredient(ingredients.find(i => i.id === ing.id) || null)}
+                  onPress={() => setEditingIngredient((ingredients as any[]).find(i => i.id === ing.id) || null)}
                   style={[styles.ingredientCard, { backgroundColor: colors.card }]}
                 >
                   <View style={styles.ingredientRow}>
@@ -580,15 +646,15 @@ export default function RecipesScreen() {
                 ]}
                 onPress={isCookingActive ? async () => {
                   // Stop cooking from here too
-                  const { error } = await supabase
-                    .from('device_state')
-                    .update({ status: 'idle' })
-                    .eq('id', 'device_001');
+                  const { error } = await (supabase
+                    .from('device_state') as any)
+                    .update({ status: 'idle' } as any)
+                    .eq('id', deviceId || 'device_001');
 
                   if (!error) {
-                    await supabase
-                      .from('cooking_sessions')
-                      .update({ status: 'stopped' })
+                    await (supabase
+                      .from('cooking_sessions') as any)
+                      .update({ status: 'stopped' } as any)
                       .eq('status', 'active');
 
                     Toast.show({
@@ -1018,9 +1084,9 @@ export default function RecipesScreen() {
 
                     try {
                       // 1. Mark any existing active sessions as stopped
-                      const { error: updateError } = await supabase
-                        .from('cooking_sessions')
-                        .update({ status: 'stopped' })
+                      const { error: updateError } = await (supabase
+                        .from('cooking_sessions') as any)
+                        .update({ status: 'stopped' } as any)
                         .eq('status', 'active');
 
                       if (updateError) {
@@ -1029,10 +1095,10 @@ export default function RecipesScreen() {
                       }
 
                       // 2. Create the new session
-                      const { error } = await supabase
-                        .from('cooking_sessions')
+                      const { error } = await (supabase
+                        .from('cooking_sessions') as any)
                         .insert({
-                          recipe_id: selectedRecipe.recipe_id,
+                          recipe_id: (selectedRecipe as any).recipe_id,
                           status: 'active',
                           current_step: 0,
                           steps: scaledSteps // Store the scaled steps with ingredients
@@ -1079,7 +1145,7 @@ export default function RecipesScreen() {
         </Modal>
         {/* Cooking in Progress Overlay */}
         {isCookingActive && (
-          <View style={styles.lockOverlay}>
+          <View style={styles.lockOverlay} pointerEvents="none">
             <Ionicons name="lock-closed" size={24} color="#fff" />
             <Text style={styles.lockText}>Cooking in progress. Please stop current session to select a new recipe.</Text>
           </View>
@@ -1095,7 +1161,6 @@ export default function RecipesScreen() {
     <View style={{ flex: 1, backgroundColor: colors.background, opacity: isCookingActive ? 0.7 : 1 }}>
       <ScrollView
         style={[styles.container, { backgroundColor: colors.background }]}
-        pointerEvents={isCookingActive ? 'none' : 'auto'}
       >
         <Text style={[styles.pageTitle, { color: colors.text }]}>My Recipes</Text>
 
@@ -1135,7 +1200,18 @@ export default function RecipesScreen() {
             <Pressable
               key={recipe.recipe_id}
               style={[styles.recipeCard, { backgroundColor: colors.card }]}
-              onPress={() => setSelectedRecipe(recipe)}
+              onPress={() => {
+                if (isCookingActive) {
+                  Toast.show({
+                    type: 'info',
+                    text1: 'Cooking in progress',
+                    text2: 'Please stop current session to select a new recipe.',
+                    position: 'bottom'
+                  });
+                  return;
+                }
+                setSelectedRecipe(recipe);
+              }}
             >
               <Image source={{ uri: recipe.image_url || 'https://via.placeholder.com/90' }} style={styles.thumb} />
 
