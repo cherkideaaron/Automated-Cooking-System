@@ -17,8 +17,8 @@ import {
 import Toast from 'react-native-toast-message';
 import { useTheme } from '../context/ThemeContext';
 import { supabase } from '../lib/supabase';
-import { recipeService } from '../services/recipeService';
 import { geminiService } from '../services/geminiService';
+import { recipeService } from '../services/recipeService';
 
 interface Ingredient {
   id: number;
@@ -37,6 +37,7 @@ interface Step {
   stirrerSpeed: number;
   amount?: number;
   unit?: 'ml' | 'g' | 'pcs';
+  cup?: number;
 }
 
 interface RecipeSuggestion {

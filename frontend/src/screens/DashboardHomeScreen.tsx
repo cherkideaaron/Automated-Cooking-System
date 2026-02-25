@@ -342,7 +342,7 @@ export default function DashboardHomeScreen() {
             const { data, error } = await supabase
                 .from('cooking_sessions')
                 .select('*, recipes(name)')
-                .eq('status', 'active')
+                .or('status.eq.active,status.eq.ready')
                 .order('created_at', { ascending: false })
                 .limit(1)
                 .maybeSingle();
@@ -400,7 +400,7 @@ export default function DashboardHomeScreen() {
         if (!isCooking) return;
 
         const interval = setInterval(async () => {
-            if (stoveStatus === 'cooking') {
+            if (stoveStatus === 'cooking' && activeSession?.status === 'active') {
                 const currentStepDuration = sessionSteps[currentStepIndex]?.duration || 0;
 
                 // Check if current step is finished (countdown reached 0)
@@ -475,7 +475,7 @@ export default function DashboardHomeScreen() {
         }, 1000);
 
         return () => clearInterval(interval);
-    }, [isCooking, stoveStatus, currentStepIndex, sessionSteps, totalSessionDuration, stepTimer]);
+    }, [isCooking, stoveStatus, currentStepIndex, sessionSteps, totalSessionDuration, stepTimer, activeSession]);
 
     // Cooking steps data
     const cookingSteps = [
@@ -544,6 +544,27 @@ export default function DashboardHomeScreen() {
                 .from('device_state')
                 .update({ status: newStatus as any })
                 .eq('id', deviceId || 'device_001');
+
+            // NEW: If we have a 'ready' session, activate it now
+            if (!error && activeSession?.status === 'ready') {
+                const { error: sessionError } = await supabase
+                    .from('cooking_sessions')
+                    .update({ status: 'active' })
+                    .eq('id', activeSession.id);
+
+                if (sessionError) {
+                    console.error('Error activating session:', sessionError);
+                } else {
+                    // Update local state to reflect it's now active
+                    setActiveSession({ ...activeSession, status: 'active' });
+                    Toast.show({
+                        type: 'success',
+                        text1: 'Cooking Activated!',
+                        text2: 'The ESP is now receiving the recipe data.',
+                        position: 'bottom'
+                    });
+                }
+            }
 
             if (error) {
                 console.error('Error updating stove status:', error);

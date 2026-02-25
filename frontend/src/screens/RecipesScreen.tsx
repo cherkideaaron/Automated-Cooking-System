@@ -28,6 +28,7 @@ interface Step {
   stirrerSpeed: number;
   amount?: number;
   unit?: 'ml' | 'g' | 'pcs';
+  cup?: number;
 }
 
 interface Ingredient {
@@ -262,7 +263,8 @@ export default function RecipesScreen() {
         stirrerSpeed: dbStep.action === 'stir' ? 2 : 0,
         amount: dbStep.action === 'add_ingredient' && dbStep.target_cup ?
           selectedRecipe.ingredients?.find(ri => ri.cup_index === dbStep.target_cup)?.amount : undefined,
-        unit: 'ml' as const
+        unit: 'ml' as const,
+        cup: dbStep.target_cup || undefined
       }));
 
       // Transform database recipe_ingredients to UI Ingredient format
@@ -289,7 +291,7 @@ export default function RecipesScreen() {
   const scaledSteps = useMemo(() => {
     if (!selectedRecipe) return [];
 
-    let currentIng: { name: string; amount: number; unit: string } | null = null;
+    let currentIng: { name: string; amount: number; unit: string; cup: number } | null = null;
 
     return steps.map(step => {
       const scaledDuration = scaleValue((step as any).duration, 1); // servings is always 1 for now
@@ -299,7 +301,8 @@ export default function RecipesScreen() {
         currentIng = {
           name: step.ingredientName || 'Ingredient',
           amount: scaleValue(step.amount, 1),
-          unit: step.unit || 'g'
+          unit: step.unit || 'g',
+          cup: step.cup || ingredients.find(i => i.name === step.ingredientName)?.cup || 1
         };
       } else if (step.instruction === 'add ingredient' && step.ingredientName) {
         const ing = ingredients.find(i => i.name === step.ingredientName);
@@ -307,7 +310,8 @@ export default function RecipesScreen() {
           currentIng = {
             name: ing.name,
             amount: scaleValue(ing.amount, 1),
-            unit: ing.unit
+            unit: ing.unit,
+            cup: ing.cup
           };
         }
       }
@@ -1093,11 +1097,16 @@ export default function RecipesScreen() {
                     if (!selectedRecipe) return;
 
                     try {
-                      // 1. Mark any existing active sessions as stopped
+                      // Reset device to idle and mark any existing active sessions as stopped
+                      await (supabase
+                        .from('device_state') as any)
+                        .update({ status: 'idle' } as any)
+                        .eq('id', 'device_001'); // Using default ID as seen in Dashboard
+
                       const { error: updateError } = await (supabase
                         .from('cooking_sessions') as any)
                         .update({ status: 'stopped' } as any)
-                        .eq('status', 'active');
+                        .or('status.eq.active,status.eq.ready');
 
                       if (updateError) {
                         console.warn('Error cleaning up old sessions:', updateError);
@@ -1109,7 +1118,7 @@ export default function RecipesScreen() {
                         .from('cooking_sessions') as any)
                         .insert({
                           recipe_id: (selectedRecipe as any).recipe_id,
-                          status: 'active',
+                          status: 'ready',
                           current_step: 0,
                           steps: scaledSteps // Store the scaled steps with ingredients
                         });

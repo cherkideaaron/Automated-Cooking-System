@@ -282,7 +282,7 @@ export interface Database {
                 Row: {
                     id: string
                     recipe_id: string
-                    status: 'active' | 'completed' | 'stopped'
+                    status: 'ready' | 'active' | 'completed' | 'stopped'
                     current_step: number
                     steps: Json
                     created_at: string
@@ -290,7 +290,7 @@ export interface Database {
                 Insert: {
                     id?: string
                     recipe_id: string
-                    status: 'active' | 'completed' | 'stopped'
+                    status: 'ready' | 'active' | 'completed' | 'stopped'
                     current_step: number
                     steps: Json
                     created_at?: string
@@ -298,7 +298,7 @@ export interface Database {
                 Update: {
                     id?: string
                     recipe_id?: string
-                    status?: 'active' | 'completed' | 'stopped'
+                    status?: 'ready' | 'active' | 'completed' | 'stopped'
                     current_step?: number
                     steps?: Json
                     created_at?: string
