@@ -1101,7 +1101,7 @@ export default function RecipesScreen() {
                       await (supabase
                         .from('device_state') as any)
                         .update({ status: 'idle' } as any)
-                        .eq('id', 'device_001'); // Using default ID as seen in Dashboard
+                        .eq('id', deviceId || 'device_001'); // Use dynamic deviceId if available
 
                       const { error: updateError } = await (supabase
                         .from('cooking_sessions') as any)

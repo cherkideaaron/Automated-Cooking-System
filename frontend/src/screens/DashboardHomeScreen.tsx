@@ -372,6 +372,18 @@ export default function DashboardHomeScreen() {
                 setRemainingTime(timeLeft);
                 setStepTimer(steps[(data as any).current_step]?.duration || 0);
 
+                // Initialize progress based on current step
+                if (totalDuration > 0) {
+                    let timeSpentPrevious = 0;
+                    for (let i = 0; i < (data as any).current_step; i++) {
+                        timeSpentPrevious += steps[i].duration || 0;
+                    }
+                    const progress = (timeSpentPrevious / totalDuration) * 100;
+                    setCookingProgress(progress);
+                } else {
+                    setCookingProgress(0);
+                }
+
                 setIsCooking(true);
                 setActiveTab('cooking');
             } else {
@@ -379,6 +391,9 @@ export default function DashboardHomeScreen() {
                 setIsCooking(false);
                 setActiveSession(null);
                 setSessionSteps([]);
+                setCookingProgress(0);
+                setRemainingTime(0);
+                setStepTimer(0);
             }
         };
 
@@ -986,13 +1001,13 @@ export default function DashboardHomeScreen() {
                                             <TouchableOpacity
                                                 style={[
                                                     styles.controlButton,
-                                                    stoveStatus === 'cooking' ? styles.controlButtonStop : styles.controlButtonStart
+                                                    (stoveStatus === 'cooking' && activeSession?.status === 'active') ? styles.controlButtonStop : styles.controlButtonStart
                                                 ]}
-                                                onPress={() => handleStoveAction(stoveStatus === 'cooking' ? 'stop' : 'start')}
+                                                onPress={() => handleStoveAction((stoveStatus === 'cooking' && activeSession?.status === 'active') ? 'stop' : 'start')}
                                             >
-                                                <Ionicons name={stoveStatus === 'cooking' ? "stop" : "play"} size={24} color="#fff" />
+                                                <Ionicons name={(stoveStatus === 'cooking' && activeSession?.status === 'active') ? "stop" : "play"} size={24} color="#fff" />
                                                 <Text style={[styles.controlButtonText, styles.controlButtonTextActive]}>
-                                                    {stoveStatus === 'cooking' ? 'Stop' : 'Start'}
+                                                    {(stoveStatus === 'cooking' && activeSession?.status === 'active') ? 'Stop' : 'Start'}
                                                 </Text>
                                             </TouchableOpacity>
                                         )}
