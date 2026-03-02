@@ -294,18 +294,25 @@ export default function DashboardHomeScreen() {
     useEffect(() => {
         // Initial fetch
         const fetchState = async () => {
+            console.log('[DEBUG] Fetching device_state...');
             const { data, error } = await supabase
                 .from('device_state')
                 .select('*')
                 .limit(1)
                 .maybeSingle();
 
+            console.log('[DEBUG] device_state fetch result:', JSON.stringify(data));
+            console.log('[DEBUG] device_state fetch error:', error);
+
             if (data) {
+                console.log('[DEBUG] Setting deviceId:', (data as any).id, 'temp:', data.temperature, 'stir:', data.stir_speed, 'status:', data.status);
                 setDeviceId((data as any).id);
                 setStoveTemp(data.temperature);
                 setStirrerSpeed(data.stir_speed);
                 // @ts-ignore
                 setStoveStatus(data.status);
+            } else {
+                console.log('[DEBUG] No device_state data found!');
             }
         };
         fetchState();
@@ -317,8 +324,10 @@ export default function DashboardHomeScreen() {
                 'postgres_changes',
                 { event: '*', schema: 'public', table: 'device_state' },
                 (payload) => {
+                    console.log('[DEBUG] Realtime device_state update received:', JSON.stringify(payload.new));
                     const newState = payload.new as Database['public']['Tables']['device_state']['Row'];
                     if (newState) {
+                        console.log('[DEBUG] Setting temp:', newState.temperature, 'stir:', newState.stir_speed, 'status:', newState.status);
                         setStoveTemp(newState.temperature);
                         setStirrerSpeed(newState.stir_speed);
                         // @ts-ignore
@@ -326,7 +335,9 @@ export default function DashboardHomeScreen() {
                     }
                 }
             )
-            .subscribe();
+            .subscribe((status) => {
+                console.log('[DEBUG] Realtime subscription status:', status);
+            });
 
         return () => {
             subscription.unsubscribe();
