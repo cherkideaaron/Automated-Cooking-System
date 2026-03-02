@@ -117,6 +117,7 @@ export default function DashboardHomeScreen() {
     const [stepTimer, setStepTimer] = useState(0); // Timer for current step in seconds
     const [pauseTimer, setPauseTimer] = useState(0); // Timer for pause duration in seconds
     const [expandedSection, setExpandedSection] = useState<string | null>(null);
+    const [syncDelay, setSyncDelay] = useState(0); // 2.5s delay to sync with ESP
 
     // Filter states
     const [priceFilter, setPriceFilter] = useState<FilterType>('all');
@@ -418,6 +419,13 @@ export default function DashboardHomeScreen() {
             if (stoveStatus === 'cooking' && activeSession?.status === 'active') {
                 const currentStepDuration = sessionSteps[currentStepIndex]?.duration || 0;
 
+                // Sync Delay - Only count down if delay is over
+                if (syncDelay > 0) {
+                    setSyncDelay(prev => Math.max(0, prev - 1));
+                    setPauseTimer(0);
+                    return;
+                }
+
                 // Check if current step is finished (countdown reached 0)
                 if (stepTimer <= 0 && currentStepDuration > 0) {
                     // Step finished!
@@ -435,6 +443,7 @@ export default function DashboardHomeScreen() {
                             setCurrentStepIndex(nextStep);
                             const nextStepDuration = sessionSteps[nextStep]?.duration || 0;
                             setStepTimer(nextStepDuration);
+                            setSyncDelay(1.5); // 3s sync delay for new step (since 1s intervals)
                         }
                     } else {
                         // All steps finished!
@@ -490,7 +499,7 @@ export default function DashboardHomeScreen() {
         }, 1000);
 
         return () => clearInterval(interval);
-    }, [isCooking, stoveStatus, currentStepIndex, sessionSteps, totalSessionDuration, stepTimer, activeSession]);
+    }, [isCooking, stoveStatus, currentStepIndex, sessionSteps, totalSessionDuration, stepTimer, activeSession, syncDelay]);
 
     // Cooking steps data
     const cookingSteps = [
@@ -551,8 +560,11 @@ export default function DashboardHomeScreen() {
             setStoveStatus(newStatus);
 
             // If starting for the first time or from idle, ensure timer is initialized
-            if (action === 'start' && stepTimer === 0 && sessionSteps.length > 0) {
-                setStepTimer(sessionSteps[currentStepIndex]?.duration || 0);
+            if (action === 'start' && sessionSteps.length > 0) {
+                if (stepTimer === 0) {
+                    setStepTimer(sessionSteps[currentStepIndex]?.duration || 0);
+                }
+                setSyncDelay(2); // 2s sync delay for first step
             }
 
             const { error } = await supabase
@@ -904,7 +916,9 @@ export default function DashboardHomeScreen() {
                                     <View style={styles.infoRow}>
                                         <View style={styles.infoItem}>
                                             <Ionicons name="time-outline" size={18} color="#E53935" />
-                                            <Text style={[styles.infoText, { color: colors.text }]}>{formatTime(remainingTime)} remaining</Text>
+                                            <Text style={[styles.infoText, { color: colors.text }]}>
+                                                {syncDelay > 0 ? 'Syncing with ESP...' : `${formatTime(remainingTime)} remaining`}
+                                            </Text>
                                         </View>
                                         <View style={styles.infoItem}>
                                             <Ionicons name="list-outline" size={18} color="#E53935" />
@@ -966,7 +980,9 @@ export default function DashboardHomeScreen() {
                                                                     {stoveStatus === 'cooking' && (
                                                                         <View style={[styles.timerBadge, { backgroundColor: 'rgba(255, 152, 0, 0.15)' }]}>
                                                                             <Ionicons name="time" size={12} color="#FF9800" />
-                                                                            <Text style={[styles.timerText, { color: '#FF9800' }]}>{formatTime(stepTimer)}</Text>
+                                                                            <Text style={[styles.timerText, { color: '#FF9800' }]}>
+                                                                                {syncDelay > 0 ? 'Syncing...' : formatTime(stepTimer)}
+                                                                            </Text>
                                                                         </View>
                                                                     )}
                                                                     {(stoveStatus === 'paused' || stoveStatus === 'idle') && pauseTimer > 0 && (
