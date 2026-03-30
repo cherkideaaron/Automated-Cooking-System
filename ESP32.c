@@ -65,7 +65,7 @@ String getISOTimestamp() {
 float readTemperature() {
   float t = dht.readTemperature();
   if (isnan(t)) {
-    Serial.println("[ERROR] DHT Sensor: Could not read data! Check wiring.");
+    Serial.println("DHT Sensor: Could not read data! Check wiring.");
     return 0.0;
   }
   return t;
@@ -118,10 +118,10 @@ void updateSupabaseTemperature() {
   if (currentTemp == 0.0) return; 
 
   String timestamp = getISOTimestamp();
-  Serial.printf("[TEMP] Reading: %.1f C. Updating Supabase device_state...\n", currentTemp);
+  Serial.printf("Reading: %.1f C. Updating Supabase device_state...\n", currentTemp);
 
   if (!secureClient.connect(SUPABASE_HOST, 443)) {
-    Serial.println("[ERROR] Temp Update: Connection to Supabase failed.");
+    Serial.println("Temp Update: Connection to Supabase failed.");
     return;
   }
 
@@ -147,7 +147,7 @@ void updateSupabaseTemperature() {
     String line = secureClient.readStringUntil('\n');
     if (line == "\r") break;
   }
-  Serial.println("[SUCCESS] device_state table updated.");
+  Serial.println("device_state table updated.");
   secureClient.stop();
 }
 
@@ -199,17 +199,16 @@ void readActiveSession() {
 
     if (currentStep != lastProcessedStep) {
       Serial.println("-------------------------------------------");
-      Serial.print("[STEP CHANGE] Processing Step: "); Serial.println(currentStep);
+      Serial.print("Processing Step: "); Serial.println(currentStep);
       
       digitalWrite(IDLE_LED, LOW);
       digitalWrite(STIR_LED, LOW);
-      Serial.println("[DEBUG] Action LEDs (Blue/Yellow) reset to LOW");
+      Serial.println("Action LEDs (Blue/Yellow) reset to LOW");
 
       if (currentStep == 0) {
-        Serial.println("[HARDWARE] >>> GREEN LED ON: Stove is now ON.");
+        Serial.println("GREEN LED ON: Stove is now ON.");
         digitalWrite(STOVE_ON_LED, HIGH);
         delay(2000); 
-        Serial.println("[HARDWARE] >>> Warmup complete.");
       }
 
       if (currentStep >= 0 && currentStep < totalSteps) {
@@ -220,25 +219,25 @@ void readActiveSession() {
 
         if (action == "add ingredient") {
           int cup = stepObj["currentIngredient"]["cup"];
-          Serial.printf("[SERVO] Rotating Cup %d to 90 deg for %d seconds...\n", cup, durationSec);
+          Serial.printf("Rotating Cup %d to 90 deg for %d seconds...\n", cup, durationSec);
           if (cup == 1) servoCup1.write(90); else servoCup2.write(90);
           delay(durationMs);
           if (cup == 1) servoCup1.write(0); else servoCup2.write(0);
-          Serial.printf("[SERVO] Cup %d has RETURNED to 0 degrees.\n", cup);
+          Serial.printf("Cup %d has RETURNED to 0 degrees.\n", cup);
         } 
         else if (action == "idle") {
-          Serial.printf("[LED] BLUE LED ON (Idle) for %d seconds...\n", durationSec);
+          Serial.printf("BLUE LED ON (Idle) for %d seconds...\n", durationSec);
           digitalWrite(IDLE_LED, HIGH);
           delay(durationMs);
           digitalWrite(IDLE_LED, LOW);
-          Serial.println("[LED] BLUE LED OFF (Idle finished)");
+          Serial.println("BLUE LED OFF (Idle finished)");
         } 
         else if (action == "stir") {
-          Serial.printf("[LED] YELLOW LED ON (Stirring) for %d seconds...\n", durationSec);
+          Serial.printf("YELLOW LED ON (Stirring) for %d seconds...\n", durationSec);
           digitalWrite(STIR_LED, HIGH);
           delay(durationMs);
           digitalWrite(STIR_LED, LOW);
-          Serial.println("[LED] YELLOW LED OFF (Stirring finished)");
+          Serial.println("YELLOW LED OFF (Stirring finished)");
         }
 
         lastProcessedStep = currentStep;
@@ -246,20 +245,20 @@ void readActiveSession() {
       } 
       
       if (currentStep >= totalSteps - 1) {
-          Serial.println("[HARDWARE] >>> SESSION COMPLETE!");
-          Serial.println("[HARDWARE] >>> GREEN LED OFF | RED LED ON");
+          Serial.println("SESSION COMPLETE!");
+          Serial.println("GREEN LED OFF | RED LED ON");
           digitalWrite(STOVE_ON_LED, LOW);
           digitalWrite(STOVE_OFF_LED, HIGH);
       }
       Serial.println("-------------------------------------------");
     } else {
-      Serial.printf("[INFO] Waiting for Step %d to advance.\n", currentStep + 1);
+      Serial.printf("Waiting for Step %d to advance.\n", currentStep + 1);
     }
   } else {
-    Serial.println("[INFO] No active sessions (status = active) found.");
+    Serial.println("No active sessions (status = active) found.");
 
     if (digitalRead(STOVE_ON_LED) == HIGH) {
-      Serial.println("[SAFETY] Active session disappeared! Turning Green LED OFF and Red LED ON.");
+      Serial.println("Turning Green LED OFF and Red LED ON.");
       digitalWrite(STOVE_ON_LED, LOW);
       digitalWrite(STOVE_OFF_LED, HIGH);
       lastSessionId = "";
