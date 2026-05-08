@@ -5,6 +5,8 @@ import { Drawer } from 'expo-router/drawer';
 import { useEffect, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { PaymentProvider } from '../../src/context/PaymentContext';
+import { useTheme } from '../../src/context/ThemeContext';
 import { supabase } from '../../src/lib/supabase';
 
 function CustomDrawerContent(props: any) {
@@ -39,10 +41,10 @@ function CustomDrawerContent(props: any) {
     );
 }
 
-import { PaymentProvider } from '../../src/context/PaymentContext';
 
 export default function DashboardLayout() {
     const router = useRouter();
+    const { colors, isDark } = useTheme();
     const [unreadCount, setUnreadCount] = useState(0);
 
     useEffect(() => {
@@ -95,7 +97,7 @@ export default function DashboardLayout() {
                                     style={{ position: 'relative' }}
                                     onPress={() => router.push('/notifications')}
                                 >
-                                    <Ionicons name="notifications-outline" size={24} color="#fff" />
+                                    <Ionicons name="notifications-outline" size={24} color={isDark ? '#fff' : colors.text} />
                                     {unreadCount > 0 && (
                                         <View style={{
                                             position: 'absolute',
@@ -106,7 +108,7 @@ export default function DashboardLayout() {
                                             height: 16,
                                             borderRadius: 8,
                                             borderWidth: 1.5,
-                                            borderColor: '#15151C',
+                                            borderColor: colors.card,
                                             alignItems: 'center',
                                             justifyContent: 'center',
                                             paddingHorizontal: 2
@@ -117,22 +119,23 @@ export default function DashboardLayout() {
                                         </View>
                                     )}
                                 </TouchableOpacity>
-                                <TouchableOpacity>
-                                    <Ionicons name="person-circle-outline" size={28} color="#fff" />
+                                <TouchableOpacity onPress={() => router.push('/settings')}>
+                                    <Ionicons name="person-circle-outline" size={28} color={isDark ? '#fff' : colors.text} />
                                 </TouchableOpacity>
                             </View>
                         ),
                         headerStyle: {
-                            backgroundColor: '#15151C',
+                            backgroundColor: isDark ? '#15151C' : colors.card,
                             elevation: 0,
                             shadowOpacity: 0,
                             borderBottomWidth: 1,
-                            borderBottomColor: '#2a2a2a',
+                            borderBottomColor: isDark ? '#2a2a2a' : colors.border,
                         },
-                        headerTintColor: '#fff',
+                        headerTintColor: isDark ? '#fff' : colors.text,
                         headerTitleStyle: {
                             fontWeight: '700',
                             fontSize: 18,
+                            color: isDark ? '#fff' : colors.text,
                         }
                     }}
                 >

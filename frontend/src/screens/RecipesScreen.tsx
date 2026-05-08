@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -7,12 +8,16 @@ import {
   Image,
   Modal,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  View
+  View,
+  LogBox
 } from 'react-native';
+
+// Ignore specific warning from react-native-draggable-flatlist Nestable variant in New Architecture
+LogBox.ignoreLogs(['Warning: ref.measureLayout must be called with a ref to a native component']);
+import { NestableScrollContainer, NestableDraggableFlatList } from 'react-native-draggable-flatlist';
 import Toast from 'react-native-toast-message';
 import { useTheme } from '../context/ThemeContext';
 import { supabase } from '../lib/supabase';
@@ -179,12 +184,14 @@ export default function RecipesScreen() {
     }
   }, [isCookingActive]);
 
-  // Handle screen focus: Reset recipe selection and check stove status
+  // Handle screen focus: Reset recipe selection, reload recipes and check stove status
   useFocusEffect(
     useCallback(() => {
       setSelectedRecipe(null);
       checkStoveStatus();
       checkActiveSession();
+      loadRecipes();   // Re-fetch so newly-published recipes appear immediately
+      checkUser();     // Re-fetch user + purchased IDs on every focus
     }, [])
   );
 
@@ -334,6 +341,77 @@ export default function RecipesScreen() {
 
   const handleStartCooking = () => {
     setShowConfirmCooking(true);
+  };
+
+  // Drag-to-sort handler that avoids DB unique constraints
+  const handleDragEnd = async ({ data }: { data: any[] }) => {
+    // Map the newly ordered scaledSteps back to the original `steps` array
+    const newStepsOrder = data.map(scaledStep => steps.find(s => s.id === scaledStep.id)!);
+    setSteps(newStepsOrder);
+
+    try { await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); } catch (_) {}
+
+    // Find which steps actually changed position
+    const updates = newStepsOrder.map((step, index) => ({
+      dbId: step.dbId,
+      newOrder: index + 1,
+      oldOrder: steps.findIndex(s => s.id === step.id) + 1
+    })).filter(u => u.dbId && u.newOrder !== u.oldOrder);
+
+    if (updates.length > 0) {
+      try {
+        // Step 1: Temporarily move to negative indices to free up unique constraint slots
+        for (const u of updates) {
+          await recipeService.updateCookingStep(u.dbId!, { step_order: -u.oldOrder });
+        }
+        // Step 2: Move them to their final correct positive orders
+        for (const u of updates) {
+          await recipeService.updateCookingStep(u.dbId!, { step_order: u.newOrder });
+        }
+      } catch (err) {
+        console.error('Failed to sync reordered steps:', err);
+      }
+    }
+  };
+
+  const renderStepItem = ({ item: step, getIndex, drag, isActive }: any) => {
+    const index = getIndex() || 0;
+    return (
+      <View style={[styles.stepCard, { backgroundColor: colors.card, opacity: isActive ? 0.8 : 1, transform: [{ scale: isActive ? 1.02 : 1 }] }]}>
+        {/* ── Reorder column (Drag Handle) ── */}
+        <Pressable
+          onLongPress={drag}
+          delayLongPress={200}
+          style={styles.stepReorderColumn}
+        >
+          <Ionicons name="menu" size={24} color={colors.textSecondary} />
+        </Pressable>
+
+        {/* ── Vertical separator ── */}
+        <View style={[styles.stepReorderSeparator, { backgroundColor: colors.border }]} />
+
+        {/* ── Step content (tap to edit) ── */}
+        <Pressable
+          onPress={() => setEditingStep(steps.find(s => s.id === step.id) || null)}
+          style={styles.stepContent}
+        >
+          <View style={styles.stepHeader}>
+            <Text style={[styles.stepTitle, { color: colors.text }]}>
+              Step {index + 1}: {step.instruction === 'add ingredient' ? `Add ${step.ingredientName}` : step.instruction}
+            </Text>
+            <Ionicons name="create-outline" size={16} color={colors.textSecondary} />
+          </View>
+          <Text style={[styles.stepSub, { color: colors.textSecondary }]}>
+            Time: {formatTime(step.duration)} · {step.temperature}°C
+          </Text>
+          {step.currentIngredient && (
+            <Text style={[styles.stepSub, { color: colors.text, fontWeight: '600', marginTop: 8 }]}>
+              {step.currentIngredient.name}: {step.currentIngredient.amount}{step.currentIngredient.unit}
+            </Text>
+          )}
+        </Pressable>
+      </View>
+    );
   };
 
   const formatTime = (seconds: number) => {
@@ -491,7 +569,7 @@ export default function RecipesScreen() {
           </View>
         </Modal>
 
-        <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
+        <NestableScrollContainer style={[styles.container, { backgroundColor: colors.background }]}>
           {/* HEADER */}
           <View style={styles.detailsHeader}>
             <Pressable onPress={() => setSelectedRecipe(null)}>
@@ -584,28 +662,12 @@ export default function RecipesScreen() {
                 </View>
               </View>
 
-              {scaledSteps.map((step, index) => (
-                <Pressable
-                  key={step.id}
-                  onPress={() => setEditingStep(steps.find(s => s.id === step.id) || null)}
-                  style={[styles.stepCard, { backgroundColor: colors.card }]}
-                >
-                  <View style={styles.stepHeader}>
-                    <Text style={[styles.stepTitle, { color: colors.text }]}>
-                      Step {index + 1}: {step.instruction === 'add ingredient' ? `Add ${step.ingredientName}` : step.instruction}
-                    </Text>
-                    <Ionicons name="create-outline" size={16} color={colors.textSecondary} />
-                  </View>
-                  <Text style={[styles.stepSub, { color: colors.textSecondary }]}>
-                    Time: {formatTime(step.duration)} · {step.temperature}°C
-                  </Text>
-                  {step.currentIngredient && (
-                    <Text style={[styles.stepSub, { color: colors.text, fontWeight: '600', marginTop: 8 }]}>
-                      {step.currentIngredient.name}: {step.currentIngredient.amount}{step.currentIngredient.unit}
-                    </Text>
-                  )}
-                </Pressable>
-              ))}
+              <NestableDraggableFlatList
+                data={scaledSteps}
+                keyExtractor={(item) => item.id.toString()}
+                onDragEnd={handleDragEnd}
+                renderItem={renderStepItem}
+              />
 
               {/* INGREDIENTS */}
               <View style={styles.sectionHeader}>
@@ -685,7 +747,7 @@ export default function RecipesScreen() {
               </Pressable>
             </>
           )}
-        </ScrollView>
+        </NestableScrollContainer>
 
         {/* STEP EDITOR MODAL */}
         <Modal
@@ -1384,10 +1446,37 @@ const styles = StyleSheet.create({
 
   stepCard: {
     borderRadius: 14,
-    padding: 12,
     marginBottom: 10,
     borderLeftWidth: 4,
     borderLeftColor: '#E53935',
+    flexDirection: 'row',
+    overflow: 'hidden',
+  },
+
+  // Step reorder controls
+  stepReorderColumn: {
+    width: 44,
+    alignItems: 'center',
+    justifyContent: 'space-evenly',
+    paddingVertical: 6,
+  },
+  stepReorderBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  stepReorderDivider: {
+    height: 1,
+    width: '60%',
+  },
+  stepReorderSeparator: {
+    width: 1,
+    marginVertical: 8,
+  },
+  stepContent: {
+    flex: 1,
+    padding: 12,
   },
 
   stepHeader: {
