@@ -5,9 +5,11 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -19,6 +21,7 @@ import {
 LogBox.ignoreLogs(['Warning: ref.measureLayout must be called with a ref to a native component']);
 import { NestableScrollContainer, NestableDraggableFlatList } from 'react-native-draggable-flatlist';
 import Toast from 'react-native-toast-message';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTheme } from '../context/ThemeContext';
 import { supabase } from '../lib/supabase';
 import { recipeService, RecipeWithDetails } from '../services/recipeService';
@@ -30,7 +33,7 @@ interface Step {
   ingredientName?: string;
   duration: number; // in seconds
   temperature: number;
-  stirrerSpeed: number;
+  stirrerSpeed: number; // 0-10 scale; maps to PWM 0-250 on the ESP32
   amount?: number;
   unit?: 'ml' | 'g' | 'pcs';
   cup?: number;
@@ -99,6 +102,8 @@ export default function RecipesScreen() {
   const [stoveStatus, setStoveStatus] = useState<'idle' | 'cooking' | 'paused' | 'error'>('idle');
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [hasActiveSession, setHasActiveSession] = useState(false);
+  const [recipeToDelete, setRecipeToDelete] = useState<{ id: string, name: string } | null>(null);
+  const [hiddenRecipeIds, setHiddenRecipeIds] = useState<string[]>([]);
 
   const params = useLocalSearchParams();
   const isCookingActive = (stoveStatus === 'cooking' || stoveStatus === 'paused') && hasActiveSession;
@@ -107,9 +112,21 @@ export default function RecipesScreen() {
   useEffect(() => {
     checkUser();
     loadRecipes();
+    loadHiddenRecipes();
     checkStoveStatus();
     checkActiveSession();
   }, []);
+
+  const loadHiddenRecipes = async () => {
+    try {
+      const stored = await AsyncStorage.getItem('@hidden_recipes');
+      if (stored) {
+        setHiddenRecipeIds(JSON.parse(stored));
+      }
+    } catch (e) {
+      console.error('Failed to load hidden recipes', e);
+    }
+  };
 
   const checkUser = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -267,7 +284,8 @@ export default function RecipesScreen() {
           selectedRecipe.ingredients?.find(ri => ri.cup_index === dbStep.target_cup)?.ingredient?.name : undefined,
         duration: dbStep.duration,
         temperature: 25, // Default temperature
-        stirrerSpeed: dbStep.action === 'stir' ? 2 : 0,
+        // stirrerSpeed stored in DB or default to 5 for stir steps (maps to PWM 125 on ESP32)
+        stirrerSpeed: (dbStep as any).stirrer_speed ?? (dbStep.action === 'stir' ? 5 : 0),
         amount: dbStep.action === 'add_ingredient' && dbStep.target_cup ?
           selectedRecipe.ingredients?.find(ri => ri.cup_index === dbStep.target_cup)?.amount : undefined,
         unit: 'ml' as const,
@@ -360,9 +378,9 @@ export default function RecipesScreen() {
 
     if (updates.length > 0) {
       try {
-        // Step 1: Temporarily move to negative indices to free up unique constraint slots
+        // Step 1: Temporarily move to large indices to free up unique constraint slots
         for (const u of updates) {
-          await recipeService.updateCookingStep(u.dbId!, { step_order: -u.oldOrder });
+          await recipeService.updateCookingStep(u.dbId!, { step_order: u.oldOrder + 1000 });
         }
         // Step 2: Move them to their final correct positive orders
         for (const u of updates) {
@@ -380,8 +398,7 @@ export default function RecipesScreen() {
       <View style={[styles.stepCard, { backgroundColor: colors.card, opacity: isActive ? 0.8 : 1, transform: [{ scale: isActive ? 1.02 : 1 }] }]}>
         {/* ── Reorder column (Drag Handle) ── */}
         <Pressable
-          onLongPress={drag}
-          delayLongPress={200}
+          onPressIn={drag}
           style={styles.stepReorderColumn}
         >
           <Ionicons name="menu" size={24} color={colors.textSecondary} />
@@ -403,6 +420,7 @@ export default function RecipesScreen() {
           </View>
           <Text style={[styles.stepSub, { color: colors.textSecondary }]}>
             Time: {formatTime(step.duration)} · {step.temperature}°C
+            {step.instruction === 'stir' ? ` · Motor Speed: ${step.stirrerSpeed}/10` : ''}
           </Text>
           {step.currentIngredient && (
             <Text style={[styles.stepSub, { color: colors.text, fontWeight: '600', marginTop: 8 }]}>
@@ -427,13 +445,51 @@ export default function RecipesScreen() {
       const matchesSearch = r.name.toLowerCase().includes(searchQuery.toLowerCase());
       const isOwnedByMe = currentUser && currentUser.id === r.owner_id;
       const isPurchased = purchasedRecipeIds.includes(r.recipe_id);
-      return matchesSearch && (isOwnedByMe || isPurchased);
+      const isHidden = hiddenRecipeIds.includes(r.recipe_id);
+      return matchesSearch && !isHidden && (isOwnedByMe || isPurchased);
     });
-  }, [searchQuery, recipes, currentUser, purchasedRecipeIds]);
+  }, [searchQuery, recipes, currentUser, purchasedRecipeIds, hiddenRecipeIds]);
 
   const maxLengthCreatorCheck = (ownerId: string) => {
     return currentUser && currentUser.id === ownerId;
   }
+
+  const handleDeleteRecipe = (recipeId: string, recipeName: string) => {
+    setRecipeToDelete({ id: recipeId, name: recipeName });
+  };
+
+  const hideRecipe = async () => {
+    if (!recipeToDelete) return;
+    
+    try {
+      const newHidden = [...hiddenRecipeIds, recipeToDelete.id];
+      await AsyncStorage.setItem('@hidden_recipes', JSON.stringify(newHidden));
+      setHiddenRecipeIds(newHidden);
+      Toast.show({ type: 'success', text1: 'Recipe hidden from your menu', position: 'bottom' });
+      if (selectedRecipe?.recipe_id === recipeToDelete.id) {
+        setSelectedRecipe(null);
+      }
+    } catch (e) {
+      Toast.show({ type: 'error', text1: 'Failed to hide recipe', position: 'bottom' });
+    }
+    setRecipeToDelete(null);
+  };
+
+  const deletePermanently = async () => {
+    if (!recipeToDelete) return;
+    
+    const success = await recipeService.deleteRecipe(recipeToDelete.id);
+    if (success) {
+      Toast.show({ type: 'success', text1: 'Recipe deleted globally', position: 'bottom' });
+      await loadRecipes();
+      if (selectedRecipe?.recipe_id === recipeToDelete.id) {
+        setSelectedRecipe(null);
+      }
+    } else {
+      Toast.show({ type: 'error', text1: 'Failed to delete recipe', position: 'bottom' });
+    }
+    setRecipeToDelete(null);
+  };
 
   const handlePurchaseConfirm = async () => {
     if (!purchaseName || !purchasePhone) {
@@ -844,6 +900,29 @@ export default function RecipesScreen() {
                 </View>
               </View>
 
+              {/* Motor Speed — only visible for stir steps */}
+              {editingStep?.instruction === 'stir' && (
+                <>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Motor Speed (0–10)</Text>
+                  <TextInput
+                    style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+                    value={editingStep?.stirrerSpeed === 0 ? '' : editingStep?.stirrerSpeed.toString()}
+                    keyboardType="numeric"
+                    placeholder="5"
+                    placeholderTextColor="#666"
+                    onChangeText={(val: string) => {
+                      const cleaned = val.replace(/[^0-9]/g, '');
+                      let num = cleaned === '' ? 0 : parseInt(cleaned);
+                      if (num > 10) num = 10;
+                      setEditingStep(prev => prev ? { ...prev, stirrerSpeed: num } : null);
+                    }}
+                  />
+                  <Text style={{ color: colors.textSecondary, fontSize: 11, marginTop: 2 }}>
+                    The motor will cycle: 3s CW → 1.5s pause → 3s CCW → repeat
+                  </Text>
+                </>
+              )}
+
               <View style={styles.modalActions}>
                 <Pressable onPress={() => setEditingStep(null)} style={styles.cancelBtn}>
                   <Text style={{ color: colors.textSecondary }}>Cancel</Text>
@@ -1240,6 +1319,38 @@ export default function RecipesScreen() {
   ========================== */
   return (
     <View style={{ flex: 1, backgroundColor: colors.background, opacity: isCookingActive ? 0.7 : 1 }}>
+      {/* DELETE CONFIRMATION MODAL */}
+      <Modal
+        visible={!!recipeToDelete}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setRecipeToDelete(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: colors.card }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Manage Recipe</Text>
+            
+            <Text style={{ color: colors.textSecondary, marginBottom: 24, fontSize: 16 }}>
+              What would you like to do with "{recipeToDelete?.name}"?
+            </Text>
+
+            <View style={{ flexDirection: 'column', gap: 12 }}>
+              <Pressable onPress={hideRecipe} style={[styles.saveBtn, { backgroundColor: colors.border }]}>
+                <Text style={[styles.saveBtnText, { color: colors.text }]}>Hide from My Menu</Text>
+              </Pressable>
+              
+              <Pressable onPress={deletePermanently} style={[styles.saveBtn, { backgroundColor: '#E53935' }]}>
+                <Text style={styles.saveBtnText}>Delete Permanently</Text>
+              </Pressable>
+
+              <Pressable onPress={() => setRecipeToDelete(null)} style={[styles.cancelBtn, { marginTop: 8, alignItems: 'center' }]}>
+                <Text style={{ color: colors.textSecondary, fontSize: 16, fontWeight: '600' }}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <ScrollView
         style={[styles.container, { backgroundColor: colors.background }]}
       >
@@ -1297,7 +1408,17 @@ export default function RecipesScreen() {
               <Image source={{ uri: recipe.image_url || 'https://via.placeholder.com/90' }} style={styles.thumb} />
 
               <View style={{ flex: 1 }}>
-                <Text style={[styles.recipeTitle, { color: colors.text }]}>{recipe.name}</Text>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginRight: 10 }}>
+                  <Text style={[styles.recipeTitle, { color: colors.text, flex: 1 }]} numberOfLines={1}>{recipe.name}</Text>
+                  {maxLengthCreatorCheck(recipe.owner_id) && (
+                    <Pressable
+                      hitSlop={15}
+                      onPress={() => handleDeleteRecipe(recipe.recipe_id, recipe.name)}
+                    >
+                      <Ionicons name="trash-outline" size={20} color="#E53935" />
+                    </Pressable>
+                  )}
+                </View>
 
                 <View style={styles.metaRow}>
                   <Text style={[styles.metaText, { color: colors.textSecondary }]}>⏱ {recipe.avg_time} min</Text>

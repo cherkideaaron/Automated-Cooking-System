@@ -262,6 +262,7 @@ export interface Database {
                     stir_speed: number
                     status: 'idle' | 'cooking' | 'paused' | 'error'
                     last_updated: string
+                    test_command: string | null
                 }
                 Insert: {
                     id?: string
@@ -269,6 +270,7 @@ export interface Database {
                     stir_speed: number
                     status: 'idle' | 'cooking' | 'paused' | 'error'
                     last_updated?: string
+                    test_command?: string | null
                 }
                 Update: {
                     id?: string
@@ -276,6 +278,7 @@ export interface Database {
                     stir_speed?: number
                     status?: 'idle' | 'cooking' | 'paused' | 'error'
                     last_updated?: string
+                    test_command?: string | null
                 }
             }
             cooking_sessions: {

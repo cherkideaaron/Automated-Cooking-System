@@ -53,7 +53,7 @@ const GEMINI_API_KEY_STORAGE = '@gemini_api_key';
 export default function CustomScreen() {
   const { colors } = useTheme();
   const router = useRouter();
-  const [mode, setMode] = useState<'manual' | 'ai'>('manual');
+  const [mode, setMode] = useState<'manual' | 'ai' | 'record'>('manual');
   const [foodName, setFoodName] = useState('');
   const [imageUri, setImageUri] = useState('');
   const [imageUrlInput, setImageUrlInput] = useState('');
@@ -75,6 +75,25 @@ export default function CustomScreen() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [expandedSuggestionId, setExpandedSuggestionId] = useState<string | null>(null);
   const [isPublishing, setIsPublishing] = useState(false);
+
+  // Record Mode states
+  const [recordedSteps, setRecordedSteps] = useState<Step[]>([]);
+  const [recordPhase, setRecordPhase] = useState<'configure' | 'recording'>('configure');
+  const [stepTimer, setStepTimer] = useState(0);
+  const [nextInstruction, setNextInstruction] = useState<'add ingredient' | 'stir' | 'idle'>('add ingredient');
+  const [nextIngredientName, setNextIngredientName] = useState<string>('');
+  const [nextStirSpeed, setNextStirSpeed] = useState(5);
+
+  // Timer for Record Mode
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (recordPhase === 'recording') {
+      interval = setInterval(() => {
+        setStepTimer((prev) => prev + 1);
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [recordPhase]);
 
   // Load API key on mount
   useEffect(() => {
@@ -396,13 +415,93 @@ export default function CustomScreen() {
     }
   };
 
+  // Record Mode Functions
+  const sendTestCommand = async (command: any) => {
+    try {
+      await supabase
+        .from('device_state')
+        .update({ test_command: command ? JSON.stringify(command) : null })
+        .eq('id', 'device_001');
+    } catch (err) {
+      console.error('Error sending test command:', err);
+      Toast.show({ type: 'error', text1: 'Command Failed', position: 'bottom' });
+    }
+  };
+
+  const startRecordingStep = async () => {
+    setStepTimer(0);
+    
+    let command = null;
+    if (nextInstruction === 'add ingredient') {
+      const ing = ingredients.find(i => i.name === nextIngredientName);
+      if (!ing) {
+        Toast.show({ type: 'error', text1: 'Please select an ingredient', position: 'bottom' });
+        return;
+      }
+      command = { type: 'cup_open', cup: ing.cup };
+    } else if (nextInstruction === 'stir') {
+      command = { type: 'stir_start', speed: nextStirSpeed * 25 }; // speed 0-10 mapped to 0-250
+    }
+    
+    if (command) {
+      await sendTestCommand(command);
+    }
+    
+    setRecordPhase('recording');
+  };
+
+  const stopRecordingStep = async () => {
+    let command = null;
+    let finalCup = undefined;
+    let finalIngredientName = undefined;
+    
+    if (nextInstruction === 'add ingredient') {
+      const ing = ingredients.find(i => i.name === nextIngredientName);
+      if (ing) {
+        command = { type: 'cup_close', cup: ing.cup };
+        finalCup = ing.cup;
+        finalIngredientName = ing.name;
+      }
+    } else if (nextInstruction === 'stir') {
+      command = { type: 'stir_stop' };
+    }
+    
+    if (command) {
+      await sendTestCommand(command);
+    }
+    
+    // Save step
+    const newStep: Step = {
+      id: Date.now(), // temporary id
+      instruction: nextInstruction,
+      duration: stepTimer,
+      temperature: 25, // default
+      stirrerSpeed: nextInstruction === 'stir' ? nextStirSpeed : 0,
+      ingredientName: finalIngredientName,
+      cup: finalCup,
+    };
+    
+    setRecordedSteps(prev => [...prev, newStep]);
+    setRecordPhase('configure');
+  };
+
+  const saveRecordedAsRecipe = () => {
+    if (recordedSteps.length === 0) {
+      Toast.show({ type: 'error', text1: 'No steps recorded', position: 'bottom' });
+      return;
+    }
+    setSteps(recordedSteps);
+    setMode('manual');
+    Toast.show({ type: 'info', text1: 'Steps imported', text2: 'Now add a name and image to publish', position: 'bottom' });
+  };
+
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.background }]} showsVerticalScrollIndicator={false}>
       <Text style={[styles.title, { color: colors.text }]}>Create Recipe</Text>
 
       {/* MODE TOGGLE */}
       <View style={[styles.modeBox, { backgroundColor: colors.inputBackground }]}>
-        {['manual', 'ai'].map((m) => (
+        {['manual', 'ai', 'record'].map((m) => (
           <Pressable
             key={m}
             onPress={() => setMode(m as any)}
@@ -418,7 +517,7 @@ export default function CustomScreen() {
                 mode === m && { color: '#fff' },
               ]}
             >
-              {m.toUpperCase()}
+              {m === 'record' ? '🔴 RECORD' : m.toUpperCase()}
             </Text>
           </Pressable>
         ))}
@@ -670,51 +769,202 @@ export default function CustomScreen() {
         </>
       )}
 
-      {/* PRICE */}
-      <Text style={[styles.label, { color: colors.textSecondary }]}>Pricing</Text>
+      {/* RECORD MODE - Realtime Execution */}
+      {mode === 'record' && (
+        <View style={{ marginTop: 24 }}>
+          {/* Header */}
+          <View style={[styles.sectionHeader, { backgroundColor: '#E53935', padding: 12, borderRadius: 8, justifyContent: 'center' }]}>
+            <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16, textAlign: 'center' }}>
+              🔴 RECORD MODE · {recordedSteps.length} steps captured
+            </Text>
+          </View>
 
-      <View style={styles.row}>
-        <Pressable
-          onPress={() => {
-            setIsPaid(false);
-            setPrice('');
-          }}
-          style={[styles.radio, { backgroundColor: colors.card }, !isPaid && styles.radioActive]}
-        >
-          <Text style={[styles.radioText, { color: !isPaid ? '#fff' : colors.text }]}>Free</Text>
-        </Pressable>
+          {/* Cup Mapping Preview */}
+          <View style={[styles.suggestionCard, { backgroundColor: colors.card, marginTop: 16 }]}>
+            <Text style={[styles.label, { color: colors.textSecondary, marginBottom: 8 }]}>CUP MAPPING (from your ingredients)</Text>
+            {ingredients.length === 0 ? (
+              <Text style={{ color: colors.textSecondary }}>No ingredients added yet.</Text>
+            ) : (
+              ingredients.map(ing => (
+                <Text key={ing.id} style={{ color: colors.text }}>
+                  • Cup {ing.cup} → {ing.name} ({ing.amount}{ing.unit})
+                </Text>
+              ))
+            )}
+          </View>
 
-        <Pressable
-          onPress={() => setIsPaid(true)}
-          style={[styles.radio, { backgroundColor: colors.card }, isPaid && styles.radioActive]}
-        >
-          <Text style={[styles.radioText, { color: isPaid ? '#fff' : colors.text }]}>Paid</Text>
-        </Pressable>
-      </View>
+          {recordPhase === 'configure' ? (
+            <View style={[styles.suggestionCard, { backgroundColor: colors.card, marginTop: 16 }]}>
+              <Text style={[styles.label, { color: colors.textSecondary, marginBottom: 16 }]}>── CONFIGURE NEXT STEP ──</Text>
+              
+              <Text style={[styles.label, { color: colors.textSecondary }]}>Instruction Type</Text>
+              <View style={[styles.instructionOptions, { marginBottom: 16 }]}>
+                {['add ingredient', 'stir', 'idle'].map((inst) => (
+                  <Pressable
+                    key={inst}
+                    onPress={() => setNextInstruction(inst as any)}
+                    style={[styles.optBtn, nextInstruction === inst && styles.optBtnSelected]}
+                  >
+                    <Text style={[styles.optText, nextInstruction === inst && styles.optTextSelected]}>{inst}</Text>
+                  </Pressable>
+                ))}
+              </View>
 
-      {isPaid && (
-        <TextInput
-          placeholder="Price (USD)"
-          placeholderTextColor={colors.textSecondary}
-          value={price}
-          onChangeText={setPrice}
-          keyboardType="numeric"
-          style={[styles.input, styles.priceInput, { backgroundColor: colors.inputBackground, color: colors.text }]}
-        />
+              {nextInstruction === 'add ingredient' && (
+                <>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Ingredient</Text>
+                  <View style={[styles.instructionOptions, { marginBottom: 16, flexWrap: 'wrap' }]}>
+                    {ingredients.length === 0 ? (
+                      <Text style={{ color: colors.textSecondary, fontStyle: 'italic', paddingVertical: 8 }}>Please add ingredients above first</Text>
+                    ) : (
+                      ingredients.map(ing => (
+                        <Pressable
+                          key={ing.id}
+                          onPress={() => setNextIngredientName(ing.name)}
+                          style={[styles.optBtn, nextIngredientName === ing.name && styles.optBtnSelected]}
+                        >
+                          <Text style={[styles.optText, nextIngredientName === ing.name && styles.optTextSelected]}>{ing.name} (Cup {ing.cup})</Text>
+                        </Pressable>
+                      ))
+                    )}
+                  </View>
+                </>
+              )}
+
+              {nextInstruction === 'stir' && (
+                <>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Motor Speed (0–10)</Text>
+                  <TextInput
+                    style={[styles.input, { backgroundColor: colors.inputBackground, color: colors.text, borderColor: colors.border, marginBottom: 16 }]}
+                    value={nextStirSpeed === 0 ? '' : nextStirSpeed.toString()}
+                    placeholder="5"
+                    placeholderTextColor="#666"
+                    keyboardType="numeric"
+                    onChangeText={(val) => {
+                      const cleaned = val.replace(/[^0-9]/g, '');
+                      let num = cleaned === '' ? 0 : parseInt(cleaned);
+                      if (num > 10) num = 10;
+                      setNextStirSpeed(num);
+                    }}
+                  />
+                </>
+              )}
+
+              <Pressable
+                style={[styles.publishBtn, { marginTop: 16 }]}
+                onPress={startRecordingStep}
+              >
+                <Text style={styles.publishText}>▶ START STEP</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={[styles.suggestionCard, { backgroundColor: colors.card, marginTop: 16, borderColor: '#E53935', borderWidth: 2 }]}>
+              <Text style={[styles.label, { color: colors.textSecondary, marginBottom: 8, textAlign: 'center' }]}>── CURRENTLY RUNNING ──</Text>
+              <Text style={{ fontSize: 32, fontWeight: 'bold', color: colors.text, textAlign: 'center', marginVertical: 16 }}>
+                ⏱ {Math.floor(stepTimer / 60)}:{(stepTimer % 60).toString().padStart(2, '0')}
+              </Text>
+              <Text style={{ fontSize: 16, color: colors.text, textAlign: 'center', marginBottom: 24 }}>
+                {nextInstruction === 'add ingredient' 
+                  ? `Adding ${nextIngredientName} — servo open`
+                  : nextInstruction === 'stir' 
+                    ? `Stirring at speed ${nextStirSpeed} — motor running` 
+                    : 'Idle — counting down'}
+              </Text>
+
+              <Pressable
+                style={[styles.publishBtn, { backgroundColor: '#424242' }]}
+                onPress={stopRecordingStep}
+              >
+                <Text style={styles.publishText}>■ STOP STEP</Text>
+              </Pressable>
+            </View>
+          )}
+
+          {/* Recorded Steps List */}
+          {recordedSteps.length > 0 && (
+            <View style={{ marginTop: 24 }}>
+              <Text style={[styles.label, { color: colors.textSecondary, marginBottom: 8 }]}>RECORDED STEPS</Text>
+              {recordedSteps.map((step, index) => (
+                <View key={step.id} style={[styles.stepCard, { backgroundColor: colors.card }]}>
+                  <View style={styles.stepHeader}>
+                    <Text style={[styles.stepTitle, { color: colors.text }]}>
+                      {index + 1}. {step.instruction === 'add ingredient' ? `Add ${step.ingredientName}` : step.instruction}
+                    </Text>
+                    <Pressable
+                      onPress={() => setRecordedSteps(recordedSteps.filter(s => s.id !== step.id))}
+                      style={styles.deleteBtn}
+                    >
+                      <Ionicons name="trash-outline" size={16} color="#E53935" />
+                    </Pressable>
+                  </View>
+                  <Text style={[styles.stepSub, { color: colors.textSecondary }]}>
+                    Duration: {formatTime(step.duration)} 
+                    {step.instruction === 'stir' ? ` · Speed ${step.stirrerSpeed}` : ''}
+                  </Text>
+                </View>
+              ))}
+
+              <Pressable
+                style={[styles.publishBtn, { marginTop: 16, backgroundColor: '#4CAF50' }]}
+                onPress={saveRecordedAsRecipe}
+              >
+                <Text style={styles.publishText}>💾 Save as Recipe</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
       )}
 
-      {/* BUTTON */}
-      <Pressable
-        style={[styles.publishBtn, isPublishing && { opacity: 0.6 }]}
-        onPress={publishRecipe}
-        disabled={isPublishing}
-      >
-        {isPublishing ? (
-          <ActivityIndicator size="small" color="#fff" />
-        ) : (
-          <Text style={styles.publishText}>Publish Recipe</Text>
-        )}
-      </Pressable>
+      {/* PRICE & PUBLISH BUTTON HIDDEN IN RECORD MODE */}
+      {mode !== 'record' && (
+        <>
+          {/* PRICE */}
+          <Text style={[styles.label, { color: colors.textSecondary }]}>Pricing</Text>
+
+          <View style={styles.row}>
+            <Pressable
+              onPress={() => {
+                setIsPaid(false);
+                setPrice('');
+              }}
+              style={[styles.radio, { backgroundColor: colors.card }, !isPaid && styles.radioActive]}
+            >
+              <Text style={[styles.radioText, { color: !isPaid ? '#fff' : colors.text }]}>Free</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setIsPaid(true)}
+              style={[styles.radio, { backgroundColor: colors.card }, isPaid && styles.radioActive]}
+            >
+              <Text style={[styles.radioText, { color: isPaid ? '#fff' : colors.text }]}>Paid</Text>
+            </Pressable>
+          </View>
+
+          {isPaid && (
+            <TextInput
+              placeholder="Price (USD)"
+              placeholderTextColor={colors.textSecondary}
+              value={price}
+              onChangeText={setPrice}
+              keyboardType="numeric"
+              style={[styles.input, styles.priceInput, { backgroundColor: colors.inputBackground, color: colors.text }]}
+            />
+          )}
+
+          {/* BUTTON */}
+          <Pressable
+            style={[styles.publishBtn, isPublishing && { opacity: 0.6 }]}
+            onPress={publishRecipe}
+            disabled={isPublishing}
+          >
+            {isPublishing ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.publishText}>Publish Recipe</Text>
+            )}
+          </Pressable>
+        </>
+      )}
 
       <View style={{ height: 50 }} />
 
@@ -945,18 +1195,25 @@ export default function CustomScreen() {
                 />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={[styles.modalLabel, { color: colors.textSecondary }]}>Stirrer Speed</Text>
+                <Text style={[styles.modalLabel, { color: colors.textSecondary }]}>Motor Speed (0–10)</Text>
                 <TextInput
                   style={[styles.input, { backgroundColor: colors.inputBackground, color: colors.text, borderColor: colors.border }]}
                   value={editingStep?.stirrerSpeed === 0 ? '' : editingStep?.stirrerSpeed.toString()}
                   keyboardType="numeric"
-                  placeholder="0"
+                  placeholder="5"
                   placeholderTextColor="#666"
                   onChangeText={(val: string) => {
                     const cleaned = val.replace(/[^0-9]/g, '');
-                    setEditingStep(prev => prev ? { ...prev, stirrerSpeed: cleaned === '' ? 0 : parseInt(cleaned) } : null);
+                    let num = cleaned === '' ? 0 : parseInt(cleaned);
+                    if (num > 10) num = 10;
+                    setEditingStep(prev => prev ? { ...prev, stirrerSpeed: num } : null);
                   }}
                 />
+                {editingStep?.instruction === 'stir' && (
+                  <Text style={{ color: colors.textSecondary, fontSize: 10, marginTop: 2 }}>
+                    3s CW → 1.5s pause → 3s CCW → repeat
+                  </Text>
+                )}
               </View>
             </View>
 
