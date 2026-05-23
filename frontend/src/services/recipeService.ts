@@ -14,6 +14,7 @@ export interface RecipeWithDetails extends Recipe {
     ingredients?: Array<RecipeIngredient & { ingredient: Ingredient }>;
     cooking_steps?: CookingStep[];
     profiles?: Database['public']['Tables']['profiles']['Row'];
+    description?: string | null;
 }
 
 class RecipeService {
@@ -474,6 +475,37 @@ class RecipeService {
         } catch (error) {
             console.error('Error in getPurchasedRecipeIds:', error);
             return [];
+        }
+    }
+
+    /**
+     * Directly add a free recipe to the user's collection
+     */
+    async addFreeRecipe(recipeId: string): Promise<boolean> {
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error('No user logged in');
+
+            const { error } = await supabase
+                .from('purchases')
+                .insert({
+                    buyer_id: user.id,
+                    recipe_id: recipeId,
+                    amount_paid: 0,
+                    status: 'approved',
+                    phone_number: 'N/A',
+                    receipt_img_url: 'N/A'
+                });
+
+            if (error) {
+                console.error('Error adding free recipe:', error);
+                throw error;
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Error in addFreeRecipe:', error);
+            return false;
         }
     }
 

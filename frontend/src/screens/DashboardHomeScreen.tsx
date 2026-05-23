@@ -1,9 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+    Dimensions,
+    FlatList,
     Image,
     KeyboardAvoidingView,
     Modal,
@@ -20,8 +23,8 @@ import Toast from 'react-native-toast-message';
 import { usePayment } from '../context/PaymentContext';
 import { useTheme } from '../context/ThemeContext';
 import { supabase } from '../lib/supabase';
-import { Database } from '../types/database.types';
 import { recipeService, RecipeWithDetails } from '../services/recipeService';
+import { Database } from '../types/database.types';
 
 type FilterType = 'all' | 'budget' | 'moderate' | 'premium';
 type RatingFilter = 'all' | '3+' | '4+';
@@ -67,6 +70,33 @@ const RECOMMENDED_RECIPE: RecipeWithDetails = {
     profiles: { username: 'Chef Isabella', id: 'chef-isabella', avatar_url: null, total_cooks: 1800, created_at: '', updated_at: '' }
 };
 
+const CAROUSEL_DATA = [
+    {
+        id: '1',
+        title: 'Smart Cooking\nMade Simple',
+        subtitle: 'Automate your favorite recipes with precision.',
+        image: 'https://images.unsplash.com/photo-1556910103-1c02745aae4d?auto=format&fit=crop&q=80',
+        label: 'App Feature'
+    },
+    {
+        id: '2',
+        title: 'Healthy Meals,\nZero Effort',
+        subtitle: 'Discover nutritionist-approved automated meals.',
+        image: 'https://images.unsplash.com/photo-1490645935967-10de6ba17061?auto=format&fit=crop&q=80',
+        label: 'Wellness'
+    },
+    {
+        id: '3',
+        title: 'Join the\nChef Community',
+        subtitle: 'Share your recipes and earn from your skills.',
+        image: 'https://plus.unsplash.com/premium_photo-1683707120438-8249afcf91dc?fm=jpg&q=60&w=3000&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D',
+        label: 'Community'
+    }
+];
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const CAROUSEL_HEIGHT = 200;
+
 export default function DashboardHomeScreen() {
     const { colors } = useTheme();
     const params = useLocalSearchParams();
@@ -77,6 +107,7 @@ export default function DashboardHomeScreen() {
     const [stoveTemp, setStoveTemp] = useState(0);
     const [stirrerSpeed, setStirrerSpeed] = useState(0);
     const [stoveStatus, setStoveStatus] = useState<'idle' | 'cooking' | 'paused' | 'error'>('idle');
+    const [deviceId, setDeviceId] = useState<string | null>(null);
     const [activeSession, setActiveSession] = useState<any>(null); // Store the full session object
     const [sessionSteps, setSessionSteps] = useState<any[]>([]); // Store the parsed steps
 
@@ -86,6 +117,7 @@ export default function DashboardHomeScreen() {
     const [stepTimer, setStepTimer] = useState(0); // Timer for current step in seconds
     const [pauseTimer, setPauseTimer] = useState(0); // Timer for pause duration in seconds
     const [expandedSection, setExpandedSection] = useState<string | null>(null);
+    const [syncDelay, setSyncDelay] = useState(0); // 2.5s delay to sync with ESP
 
     // Filter states
     const [priceFilter, setPriceFilter] = useState<FilterType>('all');
@@ -106,6 +138,52 @@ export default function DashboardHomeScreen() {
     const [totalStepsCount, setTotalStepsCount] = useState(0);
     const [cookingProgress, setCookingProgress] = useState(0);
     const [remainingTime, setRemainingTime] = useState(0);
+    const [isProcessingToggle, setIsProcessingToggle] = useState(false);
+
+    const handleToggleCooking = async (value: boolean) => {
+        if (isProcessingToggle) return;
+        setIsProcessingToggle(true);
+
+        try {
+            if (!value) {
+                // Turn OFF: Set stove to idle and stop active sessions
+                await supabase
+                    .from('cooking_sessions')
+                    .update({ status: 'stopped' })
+                    .eq('status', 'active');
+
+                await supabase
+                    .from('device_state')
+                    .update({ status: 'idle' })
+                    .eq('id', deviceId || 'device_001');
+
+                // Add notification
+                if (currentUser) {
+                    await (supabase.from('notifications') as any).insert({
+                        user_id: currentUser.id,
+                        message: `Cooking for "${activeSession?.recipes?.name || 'Recipe'}" was stopped manualy.`,
+                        type: 'warning',
+                        is_read: false
+                    });
+                }
+
+                setStoveStatus('idle');
+                setIsCooking(false);
+            } else {
+                // Turn ON: Just local state for now, as real sessions start from recipes
+                setIsCooking(true);
+            }
+        } catch (error) {
+            console.error('Error toggling cooking status:', error);
+            Toast.show({
+                type: 'error',
+                text1: 'Sync Error',
+                text2: 'Failed to update cooking status'
+            });
+        } finally {
+            setIsProcessingToggle(false);
+        }
+    };
 
     // Real recipe data from database
     const [othersRecipes, setOthersRecipes] = useState<RecipeWithDetails[]>([]);
@@ -113,10 +191,34 @@ export default function DashboardHomeScreen() {
     const [purchasedRecipeIds, setPurchasedRecipeIds] = useState<string[]>([]);
     const [currentUser, setCurrentUser] = useState<any>(null);
 
-    // Load recipes from database
+    // Carousel logic
+    const flatListRef = useRef<FlatList>(null);
+    const [currentIndex, setCurrentIndex] = useState(0);
+
     useEffect(() => {
-        loadRecipes();
-    }, []);
+        const interval = setInterval(() => {
+            if (currentIndex < CAROUSEL_DATA.length - 1) {
+                flatListRef.current?.scrollToIndex({
+                    index: currentIndex + 1,
+                    animated: true,
+                });
+            } else {
+                flatListRef.current?.scrollToIndex({
+                    index: 0,
+                    animated: true,
+                    viewPosition: 0
+                });
+            }
+        }, 5000);
+
+        return () => clearInterval(interval);
+    }, [currentIndex]);
+
+    const onScroll = (event: any) => {
+        const contentOffset = event.nativeEvent.contentOffset.x;
+        const index = Math.round(contentOffset / (SCREEN_WIDTH - 40));
+        setCurrentIndex(index);
+    };
 
     const loadRecipes = async () => {
         setLoadingRecipes(true);
@@ -137,21 +239,80 @@ export default function DashboardHomeScreen() {
         }
     };
 
+    // Load recipes when screen comes into focus
+    useFocusEffect(
+        useCallback(() => {
+            loadRecipes();
+        }, [])
+    );
+
+    // Subscribe to recipes changes (Realtime)
+    useEffect(() => {
+        const channel = supabase
+            .channel('public:recipes')
+            .on(
+                'postgres_changes',
+                {
+                    event: 'INSERT',
+                    schema: 'public',
+                    table: 'recipes'
+                },
+                async (payload: any) => {
+                    console.log('New recipe inserted:', payload);
+                    // Fetch the full recipe details including profiles
+                    const { data: newRecipe, error } = await supabase
+                        .from('recipes')
+                        .select(`
+                            *,
+                            ingredients:recipe_ingredients(
+                                *,
+                                ingredient:ingredients(*)
+                            ),
+                            cooking_steps(*),
+                            profiles:owner_id(*)
+                        `)
+                        .eq('recipe_id', payload.new.recipe_id)
+                        .single();
+
+                    if (newRecipe) {
+                        setOthersRecipes((prev: RecipeWithDetails[]) => {
+                            // Avoid duplicates just in case
+                            if (prev.some(r => r.recipe_id === (newRecipe as any).recipe_id)) return prev;
+                            return [newRecipe as RecipeWithDetails, ...prev];
+                        });
+                    }
+                }
+            )
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }, []);
+
     // Subscribe to device_state
     useEffect(() => {
         // Initial fetch
         const fetchState = async () => {
+            console.log('[DEBUG] Fetching device_state...');
             const { data, error } = await supabase
                 .from('device_state')
                 .select('*')
                 .limit(1)
                 .maybeSingle();
 
+            console.log('[DEBUG] device_state fetch result:', JSON.stringify(data));
+            console.log('[DEBUG] device_state fetch error:', error);
+
             if (data) {
+                console.log('[DEBUG] Setting deviceId:', (data as any).id, 'temp:', data.temperature, 'stir:', data.stir_speed, 'status:', data.status);
+                setDeviceId((data as any).id);
                 setStoveTemp(data.temperature);
                 setStirrerSpeed(data.stir_speed);
                 // @ts-ignore
                 setStoveStatus(data.status);
+            } else {
+                console.log('[DEBUG] No device_state data found!');
             }
         };
         fetchState();
@@ -163,8 +324,10 @@ export default function DashboardHomeScreen() {
                 'postgres_changes',
                 { event: '*', schema: 'public', table: 'device_state' },
                 (payload) => {
+                    console.log('[DEBUG] Realtime device_state update received:', JSON.stringify(payload.new));
                     const newState = payload.new as Database['public']['Tables']['device_state']['Row'];
                     if (newState) {
+                        console.log('[DEBUG] Setting temp:', newState.temperature, 'stir:', newState.stir_speed, 'status:', newState.status);
                         setStoveTemp(newState.temperature);
                         setStirrerSpeed(newState.stir_speed);
                         // @ts-ignore
@@ -172,7 +335,9 @@ export default function DashboardHomeScreen() {
                     }
                 }
             )
-            .subscribe();
+            .subscribe((status) => {
+                console.log('[DEBUG] Realtime subscription status:', status);
+            });
 
         return () => {
             subscription.unsubscribe();
@@ -188,8 +353,8 @@ export default function DashboardHomeScreen() {
             console.log('Fetching active session...');
             const { data, error } = await supabase
                 .from('cooking_sessions')
-                .select('*')
-                .eq('status', 'active')
+                .select('*, recipes(name)')
+                .or('status.eq.active,status.eq.ready')
                 .order('created_at', { ascending: false })
                 .limit(1)
                 .maybeSingle();
@@ -203,7 +368,7 @@ export default function DashboardHomeScreen() {
                 const steps = data.steps as any[];
                 setSessionSteps(steps);
                 setTotalStepsCount(steps.length);
-                setCurrentStepIndex(data.current_step);
+                setCurrentStepIndex((data as any).current_step);
 
                 // Calculate total session duration
                 const totalDuration = steps.reduce((acc, step) => acc + (step.duration || 0), 0);
@@ -213,10 +378,23 @@ export default function DashboardHomeScreen() {
                 // NOTE: This initial calculation assumes we are at the *start* of data.current_step
                 // If we want to be more precise, we'd need a 'step_started_at' timestamp
                 let timeLeft = 0;
-                for (let i = data.current_step; i < steps.length; i++) {
+                for (let i = (data as any).current_step; i < steps.length; i++) {
                     timeLeft += steps[i].duration || 0;
                 }
                 setRemainingTime(timeLeft);
+                setStepTimer(steps[(data as any).current_step]?.duration || 0);
+
+                // Initialize progress based on current step
+                if (totalDuration > 0) {
+                    let timeSpentPrevious = 0;
+                    for (let i = 0; i < (data as any).current_step; i++) {
+                        timeSpentPrevious += steps[i].duration || 0;
+                    }
+                    const progress = (timeSpentPrevious / totalDuration) * 100;
+                    setCookingProgress(progress);
+                } else {
+                    setCookingProgress(0);
+                }
 
                 setIsCooking(true);
                 setActiveTab('cooking');
@@ -225,6 +403,9 @@ export default function DashboardHomeScreen() {
                 setIsCooking(false);
                 setActiveSession(null);
                 setSessionSteps([]);
+                setCookingProgress(0);
+                setRemainingTime(0);
+                setStepTimer(0);
             }
         };
 
@@ -245,28 +426,82 @@ export default function DashboardHomeScreen() {
     useEffect(() => {
         if (!isCooking) return;
 
-        const interval = setInterval(() => {
-            if (stoveStatus === 'cooking') {
-                setStepTimer(prev => prev + 1);
-                setRemainingTime(prev => Math.max(0, prev - 1));
-                setPauseTimer(0);
+        const interval = setInterval(async () => {
+            if (stoveStatus === 'cooking' && activeSession?.status === 'active') {
+                const currentStepDuration = sessionSteps[currentStepIndex]?.duration || 0;
 
-                // Calculate Progress
-                if (totalSessionDuration > 0 && sessionSteps.length > 0) {
-                    // Time spent in previous steps
-                    let timeSpentPrevious = 0;
-                    for (let i = 0; i < currentStepIndex; i++) {
-                        timeSpentPrevious += sessionSteps[i].duration || 0;
+                // Sync Delay - Only count down if delay is over
+                if (syncDelay > 0) {
+                    setSyncDelay(prev => Math.max(0, prev - 1));
+                    setPauseTimer(0);
+                    return;
+                }
+
+                // Check if current step is finished (countdown reached 0)
+                if (stepTimer <= 0 && currentStepDuration > 0) {
+                    // Step finished!
+                    if (currentStepIndex < sessionSteps.length - 1) {
+                        // Move to next step
+                        const nextStep = currentStepIndex + 1;
+                        console.log(`Step ${currentStepIndex + 1} finished. Moving to step ${nextStep + 1}`);
+
+                        const { error } = await supabase
+                            .from('cooking_sessions')
+                            .update({ current_step: nextStep })
+                            .eq('status', 'active');
+
+                        if (!error) {
+                            setCurrentStepIndex(nextStep);
+                            const nextStepDuration = sessionSteps[nextStep]?.duration || 0;
+                            setStepTimer(nextStepDuration);
+                            setSyncDelay(1.5); // 3s sync delay for new step (since 1s intervals)
+                        }
+                    } else {
+                        // All steps finished!
+                        console.log('All steps finished. Completing session.');
+                        const { error } = await supabase
+                            .from('cooking_sessions')
+                            .update({ status: 'completed' })
+                            .eq('status', 'active');
+
+                        if (!error) {
+                            setIsCooking(false);
+                            // Also set device to idle
+                            await supabase
+                                .from('device_state')
+                                .update({ status: 'idle' })
+                                .eq('id', deviceId || 'device_001');
+
+                            // Add notification
+                            if (currentUser) {
+                                await (supabase.from('notifications') as any).insert({
+                                    user_id: currentUser.id,
+                                    message: `Your meal "${activeSession?.recipes?.name || 'Recipe'}" is ready!`,
+                                    type: 'info',
+                                    is_read: false
+                                });
+                            }
+                        }
                     }
+                } else {
+                    // Continue current step - Countdown
+                    setStepTimer(prev => Math.max(0, prev - 1));
+                    setRemainingTime(prev => Math.max(0, prev - 1));
+                    setPauseTimer(0);
 
-                    // Time spent in current step (capped at duration)
-                    const currentStepDuration = sessionSteps[currentStepIndex]?.duration || 0;
-                    const timeSpentCurrent = Math.min(stepTimer + 1, currentStepDuration); // +1 because stepTimer updates next tick
+                    // Calculate Progress
+                    if (totalSessionDuration > 0 && sessionSteps.length > 0) {
+                        let timeSpentPrevious = 0;
+                        for (let i = 0; i < currentStepIndex; i++) {
+                            timeSpentPrevious += sessionSteps[i].duration || 0;
+                        }
 
-                    const totalTimeSpent = timeSpentPrevious + timeSpentCurrent;
-                    const progress = (totalTimeSpent / totalSessionDuration) * 100;
-
-                    setCookingProgress(Math.min(100, progress));
+                        const currentStepDuration = sessionSteps[currentStepIndex]?.duration || 0;
+                        const timeSpentCurrent = currentStepDuration - stepTimer;
+                        const totalTimeSpent = timeSpentPrevious + timeSpentCurrent;
+                        const progress = (totalTimeSpent / totalSessionDuration) * 100;
+                        setCookingProgress(Math.min(100, progress));
+                    }
                 }
 
             } else if (stoveStatus === 'paused' || stoveStatus === 'idle') {
@@ -275,7 +510,7 @@ export default function DashboardHomeScreen() {
         }, 1000);
 
         return () => clearInterval(interval);
-    }, [isCooking, stoveStatus, currentStepIndex, sessionSteps, totalSessionDuration, stepTimer]);
+    }, [isCooking, stoveStatus, currentStepIndex, sessionSteps, totalSessionDuration, stepTimer, activeSession, syncDelay]);
 
     // Cooking steps data
     const cookingSteps = [
@@ -326,21 +561,92 @@ export default function DashboardHomeScreen() {
         return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
 
-    const handleStoveAction = (action: 'start' | 'stop' | 'pause' | 'resume') => {
+    const handleStoveAction = async (action: 'start' | 'stop' | 'pause' | 'resume') => {
         if (action === 'stop' || action === 'pause') {
+            setPendingAction(action === 'stop' ? 'stop' : 'pause');
             setShowConfirmModal(true);
         } else if (action === 'start' || action === 'resume') {
-            // These will eventually trigger DB updates, but for now we wait for ESP/DB update
-            // setStoveStatus('cooking'); 
+            const newStatus = 'cooking';
+            // Optimistic update
+            setStoveStatus(newStatus);
+
+            // If starting for the first time or from idle, ensure timer is initialized
+            if (action === 'start' && sessionSteps.length > 0) {
+                if (stepTimer === 0) {
+                    setStepTimer(sessionSteps[currentStepIndex]?.duration || 0);
+                }
+                setSyncDelay(2); // 2s sync delay for first step
+            }
+
+            const { error } = await supabase
+                .from('device_state')
+                .update({ status: newStatus as any })
+                .eq('id', deviceId || 'device_001');
+
+            // NEW: If we have a 'ready' session, activate it now
+            if (!error && activeSession?.status === 'ready') {
+                const { error: sessionError } = await supabase
+                    .from('cooking_sessions')
+                    .update({ status: 'active' })
+                    .eq('id', activeSession.id);
+
+                if (sessionError) {
+                    console.error('Error activating session:', sessionError);
+                } else {
+                    // Update local state to reflect it's now active
+                    setActiveSession({ ...activeSession, status: 'active' });
+                    Toast.show({
+                        type: 'success',
+                        text1: 'Cooking Activated!',
+                        text2: 'The ESP is now receiving the recipe data.',
+                        position: 'bottom'
+                    });
+                }
+            }
+
+            if (error) {
+                console.error('Error updating stove status:', error);
+                // Revert on error? Or just toast
+                Toast.show({
+                    type: 'error',
+                    text1: 'Error',
+                    text2: 'Failed to update stove status'
+                });
+            }
         }
     };
 
-    const confirmAction = () => {
-        // Here we would ideally emit a command to Supabase/ESP
+    const confirmAction = async () => {
         if (pendingAction === 'stop') {
-            // setStoveStatus('idle'); // Wait for ESP to confirm
+            // Stop session and set stove to idle
+            await supabase
+                .from('cooking_sessions')
+                .update({ status: 'stopped' })
+                .eq('status', 'active');
+
+            await supabase
+                .from('device_state')
+                .update({ status: 'idle' })
+                .eq('id', deviceId || 'device_001');
+
+            // Add notification
+            if (currentUser) {
+                await (supabase.from('notifications') as any).insert({
+                    user_id: currentUser.id,
+                    message: `Cooking for "${activeSession?.recipes?.name || 'Recipe'}" was stopped.`,
+                    type: 'warning',
+                    is_read: false
+                });
+            }
+
+            setStoveStatus('idle'); // Optimistic local state update
+            setIsCooking(false);
         } else if (pendingAction === 'pause') {
-            // setStoveStatus('paused'); // Wait for ESP to confirm
+            setStoveStatus('paused'); // Optimistic
+            await supabase
+                .from('device_state')
+                .update({ status: 'paused' })
+                .eq('id', deviceId || 'device_001');
         }
         setShowConfirmModal(false);
         setPendingAction(null);
@@ -469,12 +775,49 @@ export default function DashboardHomeScreen() {
     return (
         <View style={{ flex: 1, backgroundColor: colors.background }}>
             <ScrollView style={{ flex: 1, padding: 20 }} showsVerticalScrollIndicator={false}>
-                {/* Welcome */}
-                <View style={styles.section}>
-                    <Text style={[styles.welcome, { color: colors.text }]}>Your Kitchen Command Center 🍳</Text>
-                    <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-                        Monitor your automated cooking and explore delicious recipes
-                    </Text>
+                {/* Hero Carousel */}
+                <View style={[styles.carouselContainer, { marginBottom: 20 }]}>
+                    <FlatList
+                        ref={flatListRef}
+                        data={CAROUSEL_DATA}
+                        horizontal
+                        pagingEnabled
+                        showsHorizontalScrollIndicator={false}
+                        keyExtractor={(item) => item.id}
+                        onScroll={onScroll}
+                        scrollEventThrottle={16}
+                        snapToInterval={SCREEN_WIDTH - 40}
+                        decelerationRate="fast"
+                        renderItem={({ item }) => (
+                            <View style={styles.carouselSlide}>
+                                <Image source={{ uri: item.image }} style={styles.carouselImage} />
+                                <LinearGradient
+                                    colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.8)']}
+                                    style={styles.carouselGradient}
+                                >
+                                    <View style={styles.carouselContent}>
+                                        <View style={[styles.carouselLabel, { backgroundColor: colors.primary }]}>
+                                            <Text style={styles.carouselLabelText}>{item.label}</Text>
+                                        </View>
+                                        <Text style={styles.carouselTitle}>{item.title}</Text>
+                                        <Text style={styles.carouselSubtitle}>{item.subtitle}</Text>
+                                    </View>
+                                </LinearGradient>
+                            </View>
+                        )}
+                    />
+                    {/* Pagination Dots */}
+                    <View style={styles.pagination}>
+                        {CAROUSEL_DATA.map((_, index) => (
+                            <View
+                                key={index}
+                                style={[
+                                    styles.dot,
+                                    { backgroundColor: index === currentIndex ? colors.primary : 'rgba(255,255,255,0.4)' }
+                                ]}
+                            />
+                        ))}
+                    </View>
                 </View>
 
                 {/* Tabs */}
@@ -542,7 +885,8 @@ export default function DashboardHomeScreen() {
                             </View>
                             <Switch
                                 value={isCooking}
-                                onValueChange={setIsCooking}
+                                onValueChange={handleToggleCooking}
+                                disabled={isProcessingToggle}
                                 trackColor={{ false: '#3a3a3a', true: '#E5393580' }}
                                 thumbColor={isCooking ? '#E53935' : '#f4f3f4'}
                             />
@@ -583,7 +927,9 @@ export default function DashboardHomeScreen() {
                                     <View style={styles.infoRow}>
                                         <View style={styles.infoItem}>
                                             <Ionicons name="time-outline" size={18} color="#E53935" />
-                                            <Text style={[styles.infoText, { color: colors.text }]}>{formatTime(remainingTime)} remaining</Text>
+                                            <Text style={[styles.infoText, { color: colors.text }]}>
+                                                {syncDelay > 0 ? 'Syncing with ESP...' : `${formatTime(remainingTime)} remaining`}
+                                            </Text>
                                         </View>
                                         <View style={styles.infoItem}>
                                             <Ionicons name="list-outline" size={18} color="#E53935" />
@@ -607,8 +953,8 @@ export default function DashboardHomeScreen() {
                                                         <View
                                                             style={[
                                                                 styles.stepIndicator,
-                                                                index < currentStepIndex && styles.stepIndicatorCompleted,
-                                                                index === currentStepIndex && styles.stepIndicatorCurrent,
+                                                                index < currentStepIndex && { backgroundColor: '#4CAF50', borderColor: '#4CAF50' },
+                                                                index === currentStepIndex && { backgroundColor: '#FF9800', borderColor: '#FF9800' },
                                                                 index > currentStepIndex && styles.stepIndicatorPending,
                                                             ]}
                                                         >
@@ -622,7 +968,7 @@ export default function DashboardHomeScreen() {
                                                             <View
                                                                 style={[
                                                                     styles.stepConnector,
-                                                                    index < currentStepIndex && styles.stepConnectorCompleted,
+                                                                    index < currentStepIndex && { backgroundColor: '#4CAF50' },
                                                                 ]}
                                                             />
                                                         )}
@@ -633,8 +979,8 @@ export default function DashboardHomeScreen() {
                                                                 style={[
                                                                     styles.stepTitle,
                                                                     { color: colors.text },
-                                                                    index < currentStepIndex && styles.stepTitleCompleted,
-                                                                    index === currentStepIndex && (stoveStatus === 'cooking' ? styles.stepTitleCurrent : styles.stepTitlePaused),
+                                                                    index < currentStepIndex && { color: '#4CAF50', textDecorationLine: 'line-through', opacity: 0.7 },
+                                                                    index === currentStepIndex && { color: '#FF9800', fontWeight: '700' },
                                                                     index > currentStepIndex && styles.stepTitlePending,
                                                                 ]}
                                                             >
@@ -643,9 +989,11 @@ export default function DashboardHomeScreen() {
                                                             {index === currentStepIndex && (
                                                                 <View style={styles.stepTimers}>
                                                                     {stoveStatus === 'cooking' && (
-                                                                        <View style={styles.timerBadge}>
+                                                                        <View style={[styles.timerBadge, { backgroundColor: 'rgba(255, 152, 0, 0.15)' }]}>
                                                                             <Ionicons name="time" size={12} color="#FF9800" />
-                                                                            <Text style={styles.timerText}>{formatTime(stepTimer)}</Text>
+                                                                            <Text style={[styles.timerText, { color: '#FF9800' }]}>
+                                                                                {syncDelay > 0 ? 'Syncing...' : formatTime(stepTimer)}
+                                                                            </Text>
                                                                         </View>
                                                                     )}
                                                                     {(stoveStatus === 'paused' || stoveStatus === 'idle') && pauseTimer > 0 && (
@@ -676,38 +1024,19 @@ export default function DashboardHomeScreen() {
                                 <View style={[styles.card, { backgroundColor: colors.card }]}>
                                     <Text style={[styles.cardTitle, { color: colors.text }]}>Stove Controls</Text>
                                     <View style={styles.controlsRow}>
-                                        {stoveStatus === 'idle' && (
+                                        {(stoveStatus === 'idle' || stoveStatus === 'cooking') && (
                                             <TouchableOpacity
-                                                style={[styles.controlButton, styles.controlButtonStart]}
-                                                onPress={() => handleStoveAction('start')}
+                                                style={[
+                                                    styles.controlButton,
+                                                    (stoveStatus === 'cooking' && activeSession?.status === 'active') ? styles.controlButtonStop : styles.controlButtonStart
+                                                ]}
+                                                onPress={() => handleStoveAction((stoveStatus === 'cooking' && activeSession?.status === 'active') ? 'stop' : 'start')}
                                             >
-                                                <Ionicons name="play" size={24} color="#fff" />
+                                                <Ionicons name={(stoveStatus === 'cooking' && activeSession?.status === 'active') ? "stop" : "play"} size={24} color="#fff" />
                                                 <Text style={[styles.controlButtonText, styles.controlButtonTextActive]}>
-                                                    Start
+                                                    {(stoveStatus === 'cooking' && activeSession?.status === 'active') ? 'Stop' : 'Start'}
                                                 </Text>
                                             </TouchableOpacity>
-                                        )}
-                                        {stoveStatus === 'cooking' && (
-                                            <>
-                                                <TouchableOpacity
-                                                    style={[styles.controlButton, styles.controlButtonPause]}
-                                                    onPress={() => handleStoveAction('pause')}
-                                                >
-                                                    <Ionicons name="pause" size={24} color="#fff" />
-                                                    <Text style={[styles.controlButtonText, styles.controlButtonTextActive]}>
-                                                        Pause
-                                                    </Text>
-                                                </TouchableOpacity>
-                                                <TouchableOpacity
-                                                    style={[styles.controlButton, styles.controlButtonStop]}
-                                                    onPress={() => handleStoveAction('stop')}
-                                                >
-                                                    <Ionicons name="stop" size={24} color="#fff" />
-                                                    <Text style={[styles.controlButtonText, styles.controlButtonTextActive]}>
-                                                        Stop
-                                                    </Text>
-                                                </TouchableOpacity>
-                                            </>
                                         )}
                                         {stoveStatus === 'paused' && (
                                             <>
@@ -866,31 +1195,35 @@ export default function DashboardHomeScreen() {
                             </ScrollView>
                         </View>
 
-                        {/* Trending This Week */}
-                        <View style={styles.recipeSection}>
-                            <View style={styles.sectionHeader}>
-                                <View style={styles.trendingHeader}>
-                                    <Text style={[styles.sectionTitle, { color: colors.text }]}>Trending This Week</Text>
-                                    <View style={styles.trendingBadge}>
-                                        <Ionicons name="trending-up" size={12} color="#E53935" />
-                                        <Text style={styles.trendingBadgeText}>HOT</Text>
+                        {/* Trending This Week - Hide during search */}
+                        {!discoverSearch && (
+                            <View style={styles.recipeSection}>
+                                <View style={styles.sectionHeader}>
+                                    <View style={styles.trendingHeader}>
+                                        <Text style={[styles.sectionTitle, { color: colors.text }]}>Trending This Week</Text>
+                                        <View style={styles.trendingBadge}>
+                                            <Ionicons name="trending-up" size={12} color="#E53935" />
+                                            <Text style={styles.trendingBadgeText}>HOT</Text>
+                                        </View>
                                     </View>
                                 </View>
+                                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recipeScroll}>
+                                    {renderRecipeCard(TRENDING_RECIPE, 0, false)}
+                                </ScrollView>
                             </View>
-                            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recipeScroll}>
-                                {renderRecipeCard(TRENDING_RECIPE, 0, false)}
-                            </ScrollView>
-                        </View>
+                        )}
 
-                        {/* Recommended For You */}
-                        <View style={styles.recipeSection}>
-                            <View style={styles.sectionHeader}>
-                                <Text style={[styles.sectionTitle, { color: colors.text }]}>Recommended For You</Text>
+                        {/* Recommended For You - Hide during search */}
+                        {!discoverSearch && (
+                            <View style={styles.recipeSection}>
+                                <View style={styles.sectionHeader}>
+                                    <Text style={[styles.sectionTitle, { color: colors.text }]}>Recommended For You</Text>
+                                </View>
+                                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recipeScroll}>
+                                    {renderRecipeCard(RECOMMENDED_RECIPE, 1, false)}
+                                </ScrollView>
                             </View>
-                            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.recipeScroll}>
-                                {renderRecipeCard(RECOMMENDED_RECIPE, 1, false)}
-                            </ScrollView>
-                        </View>
+                        )}
 
                         {/* What Others Are Cooking */}
                         <View style={styles.recipeSection}>
@@ -996,19 +1329,57 @@ export default function DashboardHomeScreen() {
                                         </View>
                                     </View>
 
-                                    {selectedRecipe.price > 0 && (
-                                        <Text style={[styles.detailsPrice, { color: colors.text }]}>${selectedRecipe.price}</Text>
-                                    )}
+                                    {(() => {
+                                        const isFree = selectedRecipe.price === 0;
+                                        const isOwnedByMe = currentUser && currentUser.id === selectedRecipe.owner_id;
+                                        const isPurchased = purchasedRecipeIds.includes(selectedRecipe.recipe_id);
+                                        const alreadyHaveAccess = isOwnedByMe || isPurchased;
 
-                                    <TouchableOpacity
-                                        style={styles.buyButton}
-                                        onPress={() => {
-                                            setSelectedRecipe(null);
-                                            setTimeout(() => setShowPurchaseModal(true), 300); // Wait for close anim
-                                        }}
-                                    >
-                                        <Text style={styles.buyButtonText}>Buy Recipe</Text>
-                                    </TouchableOpacity>
+                                        if (alreadyHaveAccess) {
+                                            return (
+                                                <View style={[styles.buyButton, { backgroundColor: colors.border }]}>
+                                                    <Text style={[styles.buyButtonText, { color: colors.textSecondary }]}>Already in My Recipes</Text>
+                                                </View>
+                                            );
+                                        }
+
+                                        return (
+                                            <TouchableOpacity
+                                                style={[styles.buyButton, { backgroundColor: isFree ? '#4CAF50' : colors.primary }]}
+                                                onPress={async () => {
+                                                    if (isFree) {
+                                                        try {
+                                                            const success = await recipeService.addFreeRecipe(selectedRecipe.recipe_id);
+                                                            if (success) {
+                                                                Toast.show({
+                                                                    type: 'success',
+                                                                    text1: 'Added to My Recipes!',
+                                                                    text2: `"${selectedRecipe.name}" is now available in your collection.`
+                                                                });
+                                                                // Refresh purchased IDs
+                                                                const ids = await recipeService.getPurchasedRecipeIds();
+                                                                setPurchasedRecipeIds(ids);
+                                                                setSelectedRecipe(null);
+                                                            } else {
+                                                                Toast.show({
+                                                                    type: 'error',
+                                                                    text1: 'Failed to add recipe',
+                                                                    text2: 'Please try again later.'
+                                                                });
+                                                            }
+                                                        } catch (error) {
+                                                            console.error('Add free recipe error:', error);
+                                                        }
+                                                    } else {
+                                                        setSelectedRecipe(null);
+                                                        setTimeout(() => setShowPurchaseModal(true), 300);
+                                                    }
+                                                }}
+                                            >
+                                                <Text style={styles.buyButtonText}>{isFree ? 'Add Recipe' : 'Buy Recipe'}</Text>
+                                            </TouchableOpacity>
+                                        );
+                                    })()}
 
                                     <TouchableOpacity
                                         style={[styles.buyButton, { backgroundColor: 'transparent', marginTop: 10, borderWidth: 1, borderColor: colors.border }]}
@@ -2048,5 +2419,66 @@ const styles = StyleSheet.create({
         width: 40,
         height: 40,
         borderRadius: 8,
+    },
+
+    // Carousel Styles
+    carouselContainer: {
+        height: CAROUSEL_HEIGHT,
+        width: SCREEN_WIDTH - 40,
+        borderRadius: 20,
+        overflow: 'hidden',
+        backgroundColor: '#1E1E26',
+    },
+    carouselSlide: {
+        width: SCREEN_WIDTH - 40,
+        height: CAROUSEL_HEIGHT,
+    },
+    carouselImage: {
+        width: '100%',
+        height: '100%',
+        position: 'absolute',
+    },
+    carouselGradient: {
+        flex: 1,
+        justifyContent: 'flex-end',
+        padding: 20,
+    },
+    carouselContent: {
+        gap: 6,
+    },
+    carouselLabel: {
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        borderRadius: 12,
+        alignSelf: 'flex-start',
+    },
+    carouselLabelText: {
+        color: '#fff',
+        fontSize: 10,
+        fontWeight: '800',
+        textTransform: 'uppercase',
+    },
+    carouselTitle: {
+        color: '#fff',
+        fontSize: 22,
+        fontWeight: '900',
+        lineHeight: 28,
+    },
+    carouselSubtitle: {
+        color: 'rgba(255,255,255,0.8)',
+        fontSize: 13,
+        fontWeight: '500',
+    },
+    pagination: {
+        flexDirection: 'row',
+        position: 'absolute',
+        bottom: 12,
+        alignSelf: 'center',
+        gap: 6,
+    },
+    dot: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
     },
 });

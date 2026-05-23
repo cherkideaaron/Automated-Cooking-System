@@ -1,8 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import * as Haptics from 'expo-haptics';
+import * as ImagePicker from 'expo-image-picker';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Modal,
   Pressable,
@@ -10,13 +13,18 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  View
+  View,
+  LogBox
 } from 'react-native';
+
+// Ignore specific warning from react-native-draggable-flatlist Nestable variant in New Architecture
+LogBox.ignoreLogs(['Warning: ref.measureLayout must be called with a ref to a native component']);
+import { NestableScrollContainer, NestableDraggableFlatList } from 'react-native-draggable-flatlist';
 import Toast from 'react-native-toast-message';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTheme } from '../context/ThemeContext';
 import { supabase } from '../lib/supabase';
 import { recipeService, RecipeWithDetails } from '../services/recipeService';
-import * as ImagePicker from 'expo-image-picker';
 
 interface Step {
   id: number;
@@ -25,9 +33,10 @@ interface Step {
   ingredientName?: string;
   duration: number; // in seconds
   temperature: number;
-  stirrerSpeed: number;
+  stirrerSpeed: number; // 0-10 scale; maps to PWM 0-250 on the ESP32
   amount?: number;
   unit?: 'ml' | 'g' | 'pcs';
+  cup?: number;
 }
 
 interface Ingredient {
@@ -39,6 +48,18 @@ interface Ingredient {
   unit: 'ml' | 'g' | 'pcs';
   cup: number;
 }
+
+// Assuming RecipeWithDetails is defined in recipeService.ts and now includes 'description'
+// For the purpose of this file, we'll ensure the local Recipe interface is compatible
+// and assume RecipeWithDetails from recipeService.ts has the new field.
+// If the user intended to define RecipeWithDetails here, it would conflict with the import.
+// Therefore, this is a placeholder to reflect the change in the type's structure.
+// export interface RecipeWithDetails extends Recipe {
+//   ingredients?: Array<RecipeIngredient & { ingredient: Ingredient }>;
+//   cooking_steps?: CookingStep[];
+//   profiles?: Database['public']['Tables']['profiles']['Row'];
+//   description?: string | null;
+// }
 
 interface Recipe {
   id: string;
@@ -78,20 +99,40 @@ export default function RecipesScreen() {
   const [showConfirmCooking, setShowConfirmCooking] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showIngredientDropdown, setShowIngredientDropdown] = useState(false);
+  const [stoveStatus, setStoveStatus] = useState<'idle' | 'cooking' | 'paused' | 'error'>('idle');
+  const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [hasActiveSession, setHasActiveSession] = useState(false);
+  const [recipeToDelete, setRecipeToDelete] = useState<{ id: string, name: string } | null>(null);
+  const [hiddenRecipeIds, setHiddenRecipeIds] = useState<string[]>([]);
 
   const params = useLocalSearchParams();
+  const isCookingActive = (stoveStatus === 'cooking' || stoveStatus === 'paused') && hasActiveSession;
 
   // Fetch recipes from database on mount
   useEffect(() => {
     checkUser();
     loadRecipes();
+    loadHiddenRecipes();
+    checkStoveStatus();
+    checkActiveSession();
   }, []);
+
+  const loadHiddenRecipes = async () => {
+    try {
+      const stored = await AsyncStorage.getItem('@hidden_recipes');
+      if (stored) {
+        setHiddenRecipeIds(JSON.parse(stored));
+      }
+    } catch (e) {
+      console.error('Failed to load hidden recipes', e);
+    }
+  };
 
   const checkUser = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     setCurrentUser(user);
     if (user) {
-      const ids = await recipeService.getPurchasedRecipeIds();
+      const ids = await (recipeService.getPurchasedRecipeIds() as any);
       setPurchasedRecipeIds(ids);
     }
   };
@@ -99,7 +140,7 @@ export default function RecipesScreen() {
   const loadRecipes = async () => {
     setLoading(true);
     try {
-      const data = await recipeService.getAllRecipes();
+      const data = await (recipeService.getAllRecipes() as any);
       setRecipes(data);
     } catch (error) {
       console.error('Error loading recipes:', error);
@@ -113,21 +154,123 @@ export default function RecipesScreen() {
     }
   };
 
+  const checkActiveSession = async () => {
+    const { data } = await supabase
+      .from('cooking_sessions')
+      .select('id')
+      .eq('status', 'active')
+      .maybeSingle();
+
+    setHasActiveSession(!!data);
+  };
+
   useEffect(() => {
     if (params.search) {
       setSearchQuery(params.search as string);
     }
   }, [params.search]);
 
-  // Handle auto-open via params
   useEffect(() => {
     if (params.recipeId && recipes.length > 0) {
-      const target = recipes.find(r => r.recipe_id === params.recipeId);
+      if (isCookingActive) {
+        Toast.show({
+          type: 'info',
+          text1: 'Cooking in progress',
+          text2: 'Please stop current session to select a new recipe.',
+          position: 'bottom'
+        });
+        return;
+      }
+      const target = (recipes as any[]).find(r => r.recipe_id === params.recipeId);
       if (target) {
-        setSelectedRecipe(target);
+        setSelectedRecipe(target as any);
       }
     }
-  }, [params.recipeId, recipes]);
+  }, [params.recipeId, recipes, isCookingActive]);
+
+  // Secondary guard: If cooking starts while we are on this screen, clear any detail view
+  useEffect(() => {
+    if (isCookingActive && selectedRecipe) {
+      setSelectedRecipe(null);
+      Toast.show({
+        type: 'info',
+        text1: 'Cooking in progress',
+        text2: 'Please stop current session to select a new recipe.',
+        position: 'bottom'
+      });
+    }
+  }, [isCookingActive]);
+
+  // Handle screen focus: Reset recipe selection, reload recipes and check stove status
+  useFocusEffect(
+    useCallback(() => {
+      setSelectedRecipe(null);
+      checkStoveStatus();
+      checkActiveSession();
+      loadRecipes();   // Re-fetch so newly-published recipes appear immediately
+      checkUser();     // Re-fetch user + purchased IDs on every focus
+    }, [])
+  );
+
+  const checkStoveStatus = async () => {
+    const { data } = await (supabase
+      .from('device_state') as any)
+      .select('id, status')
+      .limit(1)
+      .maybeSingle();
+
+    if (data) {
+      console.log('RecipesScreen: Found device status:', (data as any).status);
+      setDeviceId((data as any).id);
+      setStoveStatus((data as any).status);
+    }
+  };
+
+  // Subscribe to device and session status
+  useEffect(() => {
+    if (!deviceId) return;
+
+    const deviceChannel = supabase
+      .channel('recipe_screen_stove_status')
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'device_state'
+        },
+        (payload: any) => {
+          console.log('RecipesScreen: Device update:', payload.new?.status);
+          const newStatus = payload.new?.status;
+          if (newStatus) {
+            setStoveStatus(newStatus);
+          }
+        }
+      )
+      .subscribe();
+
+    const sessionChannel = supabase
+      .channel('recipe_screen_session_status')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'cooking_sessions'
+        },
+        (payload: any) => {
+          console.log('RecipesScreen: Session update:', payload.eventType, payload.new?.status);
+          checkActiveSession(); // Re-fetch for accuracy
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(deviceChannel);
+      supabase.removeChannel(sessionChannel);
+    };
+  }, [deviceId]);
+
 
   useEffect(() => {
     if (selectedRecipe) {
@@ -141,10 +284,12 @@ export default function RecipesScreen() {
           selectedRecipe.ingredients?.find(ri => ri.cup_index === dbStep.target_cup)?.ingredient?.name : undefined,
         duration: dbStep.duration,
         temperature: 25, // Default temperature
-        stirrerSpeed: dbStep.action === 'stir' ? 2 : 0,
+        // stirrerSpeed stored in DB or default to 5 for stir steps (maps to PWM 125 on ESP32)
+        stirrerSpeed: (dbStep as any).stirrer_speed ?? (dbStep.action === 'stir' ? 5 : 0),
         amount: dbStep.action === 'add_ingredient' && dbStep.target_cup ?
           selectedRecipe.ingredients?.find(ri => ri.cup_index === dbStep.target_cup)?.amount : undefined,
-        unit: 'ml' as const
+        unit: 'ml' as const,
+        cup: dbStep.target_cup || undefined
       }));
 
       // Transform database recipe_ingredients to UI Ingredient format
@@ -171,17 +316,18 @@ export default function RecipesScreen() {
   const scaledSteps = useMemo(() => {
     if (!selectedRecipe) return [];
 
-    let currentIng: { name: string; amount: number; unit: string } | null = null;
+    let currentIng: { name: string; amount: number; unit: string; cup: number } | null = null;
 
     return steps.map(step => {
-      const scaledDuration = scaleValue(step.duration, 1); // servings is always 1 for now
+      const scaledDuration = scaleValue((step as any).duration, 1); // servings is always 1 for now
 
       // If step has a manual amount, use it (scaled)
       if (step.amount !== undefined) {
         currentIng = {
           name: step.ingredientName || 'Ingredient',
           amount: scaleValue(step.amount, 1),
-          unit: step.unit || 'g'
+          unit: step.unit || 'g',
+          cup: step.cup || ingredients.find(i => i.name === step.ingredientName)?.cup || 1
         };
       } else if (step.instruction === 'add ingredient' && step.ingredientName) {
         const ing = ingredients.find(i => i.name === step.ingredientName);
@@ -189,7 +335,8 @@ export default function RecipesScreen() {
           currentIng = {
             name: ing.name,
             amount: scaleValue(ing.amount, 1),
-            unit: ing.unit
+            unit: ing.unit,
+            cup: ing.cup
           };
         }
       }
@@ -204,7 +351,7 @@ export default function RecipesScreen() {
 
   const scaledIngredients = useMemo(() => {
     if (!selectedRecipe) return [];
-    return ingredients.map(ing => ({
+    return (ingredients as any[]).map(ing => ({
       ...ing,
       amount: scaleValue(ing.amount, 1)
     }));
@@ -212,6 +359,77 @@ export default function RecipesScreen() {
 
   const handleStartCooking = () => {
     setShowConfirmCooking(true);
+  };
+
+  // Drag-to-sort handler that avoids DB unique constraints
+  const handleDragEnd = async ({ data }: { data: any[] }) => {
+    // Map the newly ordered scaledSteps back to the original `steps` array
+    const newStepsOrder = data.map(scaledStep => steps.find(s => s.id === scaledStep.id)!);
+    setSteps(newStepsOrder);
+
+    try { await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); } catch (_) {}
+
+    // Find which steps actually changed position
+    const updates = newStepsOrder.map((step, index) => ({
+      dbId: step.dbId,
+      newOrder: index + 1,
+      oldOrder: steps.findIndex(s => s.id === step.id) + 1
+    })).filter(u => u.dbId && u.newOrder !== u.oldOrder);
+
+    if (updates.length > 0) {
+      try {
+        // Step 1: Temporarily move to large indices to free up unique constraint slots
+        for (const u of updates) {
+          await recipeService.updateCookingStep(u.dbId!, { step_order: u.oldOrder + 1000 });
+        }
+        // Step 2: Move them to their final correct positive orders
+        for (const u of updates) {
+          await recipeService.updateCookingStep(u.dbId!, { step_order: u.newOrder });
+        }
+      } catch (err) {
+        console.error('Failed to sync reordered steps:', err);
+      }
+    }
+  };
+
+  const renderStepItem = ({ item: step, getIndex, drag, isActive }: any) => {
+    const index = getIndex() || 0;
+    return (
+      <View style={[styles.stepCard, { backgroundColor: colors.card, opacity: isActive ? 0.8 : 1, transform: [{ scale: isActive ? 1.02 : 1 }] }]}>
+        {/* ── Reorder column (Drag Handle) ── */}
+        <Pressable
+          onPressIn={drag}
+          style={styles.stepReorderColumn}
+        >
+          <Ionicons name="menu" size={24} color={colors.textSecondary} />
+        </Pressable>
+
+        {/* ── Vertical separator ── */}
+        <View style={[styles.stepReorderSeparator, { backgroundColor: colors.border }]} />
+
+        {/* ── Step content (tap to edit) ── */}
+        <Pressable
+          onPress={() => setEditingStep(steps.find(s => s.id === step.id) || null)}
+          style={styles.stepContent}
+        >
+          <View style={styles.stepHeader}>
+            <Text style={[styles.stepTitle, { color: colors.text }]}>
+              Step {index + 1}: {step.instruction === 'add ingredient' ? `Add ${step.ingredientName}` : step.instruction}
+            </Text>
+            <Ionicons name="create-outline" size={16} color={colors.textSecondary} />
+          </View>
+          <Text style={[styles.stepSub, { color: colors.textSecondary }]}>
+            Time: {formatTime(step.duration)} · {step.temperature}°C
+            {step.instruction === 'stir' ? ` · Motor Speed: ${step.stirrerSpeed}/10` : ''}
+          </Text>
+          {step.currentIngredient && (
+            <Text style={[styles.stepSub, { color: colors.text, fontWeight: '600', marginTop: 8 }]}>
+              {step.currentIngredient.name}: {step.currentIngredient.amount}{step.currentIngredient.unit}
+            </Text>
+          )}
+        </Pressable>
+      </View>
+    );
   };
 
   const formatTime = (seconds: number) => {
@@ -223,14 +441,55 @@ export default function RecipesScreen() {
 
   // Filtered recipes for list view - MUST be before any conditional returns
   const filteredRecipes = useMemo(() => {
-    return recipes.filter(r =>
-      r.name.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  }, [searchQuery, recipes]);
+    return recipes.filter(r => {
+      const matchesSearch = r.name.toLowerCase().includes(searchQuery.toLowerCase());
+      const isOwnedByMe = currentUser && currentUser.id === r.owner_id;
+      const isPurchased = purchasedRecipeIds.includes(r.recipe_id);
+      const isHidden = hiddenRecipeIds.includes(r.recipe_id);
+      return matchesSearch && !isHidden && (isOwnedByMe || isPurchased);
+    });
+  }, [searchQuery, recipes, currentUser, purchasedRecipeIds, hiddenRecipeIds]);
 
   const maxLengthCreatorCheck = (ownerId: string) => {
     return currentUser && currentUser.id === ownerId;
   }
+
+  const handleDeleteRecipe = (recipeId: string, recipeName: string) => {
+    setRecipeToDelete({ id: recipeId, name: recipeName });
+  };
+
+  const hideRecipe = async () => {
+    if (!recipeToDelete) return;
+    
+    try {
+      const newHidden = [...hiddenRecipeIds, recipeToDelete.id];
+      await AsyncStorage.setItem('@hidden_recipes', JSON.stringify(newHidden));
+      setHiddenRecipeIds(newHidden);
+      Toast.show({ type: 'success', text1: 'Recipe hidden from your menu', position: 'bottom' });
+      if (selectedRecipe?.recipe_id === recipeToDelete.id) {
+        setSelectedRecipe(null);
+      }
+    } catch (e) {
+      Toast.show({ type: 'error', text1: 'Failed to hide recipe', position: 'bottom' });
+    }
+    setRecipeToDelete(null);
+  };
+
+  const deletePermanently = async () => {
+    if (!recipeToDelete) return;
+    
+    const success = await recipeService.deleteRecipe(recipeToDelete.id);
+    if (success) {
+      Toast.show({ type: 'success', text1: 'Recipe deleted globally', position: 'bottom' });
+      await loadRecipes();
+      if (selectedRecipe?.recipe_id === recipeToDelete.id) {
+        setSelectedRecipe(null);
+      }
+    } else {
+      Toast.show({ type: 'error', text1: 'Failed to delete recipe', position: 'bottom' });
+    }
+    setRecipeToDelete(null);
+  };
 
   const handlePurchaseConfirm = async () => {
     if (!purchaseName || !purchasePhone) {
@@ -366,7 +625,7 @@ export default function RecipesScreen() {
           </View>
         </Modal>
 
-        <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
+        <NestableScrollContainer style={[styles.container, { backgroundColor: colors.background }]}>
           {/* HEADER */}
           <View style={styles.detailsHeader}>
             <Pressable onPress={() => setSelectedRecipe(null)}>
@@ -459,28 +718,12 @@ export default function RecipesScreen() {
                 </View>
               </View>
 
-              {scaledSteps.map((step, index) => (
-                <Pressable
-                  key={step.id}
-                  onPress={() => setEditingStep(steps.find(s => s.id === step.id) || null)}
-                  style={[styles.stepCard, { backgroundColor: colors.card }]}
-                >
-                  <View style={styles.stepHeader}>
-                    <Text style={[styles.stepTitle, { color: colors.text }]}>
-                      Step {index + 1}: {step.instruction === 'add ingredient' ? `Add ${step.ingredientName}` : step.instruction}
-                    </Text>
-                    <Ionicons name="create-outline" size={16} color={colors.textSecondary} />
-                  </View>
-                  <Text style={[styles.stepSub, { color: colors.textSecondary }]}>
-                    Time: {formatTime(step.duration)} · {step.temperature}°C
-                  </Text>
-                  {step.currentIngredient && (
-                    <Text style={[styles.stepSub, { color: colors.text, fontWeight: '600', marginTop: 8 }]}>
-                      {step.currentIngredient.name}: {step.currentIngredient.amount}{step.currentIngredient.unit}
-                    </Text>
-                  )}
-                </Pressable>
-              ))}
+              <NestableDraggableFlatList
+                data={scaledSteps}
+                keyExtractor={(item) => item.id.toString()}
+                onDragEnd={handleDragEnd}
+                renderItem={renderStepItem}
+              />
 
               {/* INGREDIENTS */}
               <View style={styles.sectionHeader}>
@@ -500,7 +743,7 @@ export default function RecipesScreen() {
               {scaledIngredients.map((ing) => (
                 <Pressable
                   key={ing.id}
-                  onPress={() => setEditingIngredient(ingredients.find(i => i.id === ing.id) || null)}
+                  onPress={() => setEditingIngredient((ingredients as any[]).find(i => i.id === ing.id) || null)}
                   style={[styles.ingredientCard, { backgroundColor: colors.card }]}
                 >
                   <View style={styles.ingredientRow}>
@@ -517,16 +760,50 @@ export default function RecipesScreen() {
                 </Pressable>
               ))}
 
-              {/* START COOKING */}
+              {/* START / STOP COOKING */}
               <Pressable
-                style={styles.startBtn}
-                onPress={handleStartCooking}
+                style={[
+                  styles.startBtn,
+                  isCookingActive && { backgroundColor: '#E53935' }
+                ]}
+                onPress={isCookingActive ? async () => {
+                  // Stop cooking from here too
+                  const { error } = await (supabase
+                    .from('device_state') as any)
+                    .update({ status: 'idle' } as any)
+                    .eq('id', deviceId || 'device_001');
+
+                  if (!error) {
+                    await (supabase
+                      .from('cooking_sessions') as any)
+                      .update({ status: 'stopped' } as any)
+                      .eq('status', 'active');
+
+                    // Add notification
+                    if (currentUser) {
+                      await (supabase.from('notifications') as any).insert({
+                        user_id: currentUser.id,
+                        message: `Cooking for "${selectedRecipe.name}" was stopped.`,
+                        type: 'warning',
+                        is_read: false
+                      });
+                    }
+
+                    Toast.show({
+                      type: 'success',
+                      text1: 'Cooking Stopped',
+                      position: 'bottom'
+                    });
+                  }
+                } : handleStartCooking}
               >
-                <Text style={styles.startText}>Start Cooking</Text>
+                <Text style={styles.startText}>
+                  {isCookingActive ? 'Stop Cooking' : 'Start Cooking'}
+                </Text>
               </Pressable>
             </>
           )}
-        </ScrollView>
+        </NestableScrollContainer>
 
         {/* STEP EDITOR MODAL */}
         <Modal
@@ -622,6 +899,29 @@ export default function RecipesScreen() {
                   </View>
                 </View>
               </View>
+
+              {/* Motor Speed — only visible for stir steps */}
+              {editingStep?.instruction === 'stir' && (
+                <>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Motor Speed (0–10)</Text>
+                  <TextInput
+                    style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+                    value={editingStep?.stirrerSpeed === 0 ? '' : editingStep?.stirrerSpeed.toString()}
+                    keyboardType="numeric"
+                    placeholder="5"
+                    placeholderTextColor="#666"
+                    onChangeText={(val: string) => {
+                      const cleaned = val.replace(/[^0-9]/g, '');
+                      let num = cleaned === '' ? 0 : parseInt(cleaned);
+                      if (num > 10) num = 10;
+                      setEditingStep(prev => prev ? { ...prev, stirrerSpeed: num } : null);
+                    }}
+                  />
+                  <Text style={{ color: colors.textSecondary, fontSize: 11, marginTop: 2 }}>
+                    The motor will cycle: 3s CW → 1.5s pause → 3s CCW → repeat
+                  </Text>
+                </>
+              )}
 
               <View style={styles.modalActions}>
                 <Pressable onPress={() => setEditingStep(null)} style={styles.cancelBtn}>
@@ -938,11 +1238,16 @@ export default function RecipesScreen() {
                     if (!selectedRecipe) return;
 
                     try {
-                      // 1. Mark any existing active sessions as stopped
-                      const { error: updateError } = await supabase
-                        .from('cooking_sessions')
-                        .update({ status: 'stopped' })
-                        .eq('status', 'active');
+                      // Reset device to idle and mark any existing active sessions as stopped
+                      await (supabase
+                        .from('device_state') as any)
+                        .update({ status: 'idle' } as any)
+                        .eq('id', deviceId || 'device_001'); // Use dynamic deviceId if available
+
+                      const { error: updateError } = await (supabase
+                        .from('cooking_sessions') as any)
+                        .update({ status: 'stopped' } as any)
+                        .or('status.eq.active,status.eq.ready');
 
                       if (updateError) {
                         console.warn('Error cleaning up old sessions:', updateError);
@@ -950,11 +1255,11 @@ export default function RecipesScreen() {
                       }
 
                       // 2. Create the new session
-                      const { error } = await supabase
-                        .from('cooking_sessions')
+                      const { error } = await (supabase
+                        .from('cooking_sessions') as any)
                         .insert({
-                          recipe_id: selectedRecipe.recipe_id,
-                          status: 'active',
+                          recipe_id: (selectedRecipe as any).recipe_id,
+                          status: 'ready',
                           current_step: 0,
                           steps: scaledSteps.map(step => ({
                             id: step.id,
@@ -973,20 +1278,21 @@ export default function RecipesScreen() {
                       setShowConfirmCooking(false);
                       Toast.show({
                         type: 'success',
-                        text1: 'Starting Cooking...',
-                        text2: 'Redirecting to dashboard',
-                        position: 'bottom'
+                        text1: 'Cooking Session Initialized',
+                        text2: "Click 'Start' in Stove Controls to begin cooking!",
+                        position: 'bottom',
+                        visibilityTime: 4000
                       });
 
                       // Navigate to Dashboard with cooking params
                       // Use a timestamp to force a refresh if the user is already on the dashboard
                       router.push({
-                        pathname: "/(tabs)/",
+                        pathname: "/(tabs)",
                         params: {
                           startCooking: 'true',
                           ts: Date.now().toString()
                         }
-                      });
+                      } as any);
                     } catch (e) {
                       console.error(e);
                       Toast.show({
@@ -1006,6 +1312,13 @@ export default function RecipesScreen() {
             </View>
           </View>
         </Modal>
+        {/* Cooking in Progress Overlay */}
+        {isCookingActive && (
+          <View style={styles.lockOverlay} pointerEvents="none">
+            <Ionicons name="lock-closed" size={24} color="#fff" />
+            <Text style={styles.lockText}>Cooking in progress. Please stop current session to select a new recipe.</Text>
+          </View>
+        )}
       </View>
     );
   }
@@ -1014,64 +1327,129 @@ export default function RecipesScreen() {
      RECIPE LIST VIEW
   ========================== */
   return (
-    <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
-      <Text style={[styles.pageTitle, { color: colors.text }]}>My Recipes</Text>
+    <View style={{ flex: 1, backgroundColor: colors.background, opacity: isCookingActive ? 0.7 : 1 }}>
+      {/* DELETE CONFIRMATION MODAL */}
+      <Modal
+        visible={!!recipeToDelete}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setRecipeToDelete(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: colors.card }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Manage Recipe</Text>
+            
+            <Text style={{ color: colors.textSecondary, marginBottom: 24, fontSize: 16 }}>
+              What would you like to do with "{recipeToDelete?.name}"?
+            </Text>
 
-      {/* SEARCH BAR */}
-      <View style={[styles.searchContainer, { backgroundColor: colors.card, borderColor: colors.border }]}>
-        <Ionicons name="search" size={20} color={colors.textSecondary} />
-        <TextInput
-          style={[styles.searchInput, { color: colors.text }]}
-          placeholder="Search recipes..."
-          placeholderTextColor={colors.textSecondary}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-        />
-        {searchQuery.length > 0 && (
-          <Pressable onPress={() => setSearchQuery('')}>
-            <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
-          </Pressable>
-        )}
-      </View>
+            <View style={{ flexDirection: 'column', gap: 12 }}>
+              <Pressable onPress={hideRecipe} style={[styles.saveBtn, { backgroundColor: colors.border }]}>
+                <Text style={[styles.saveBtnText, { color: colors.text }]}>Hide from My Menu</Text>
+              </Pressable>
+              
+              <Pressable onPress={deletePermanently} style={[styles.saveBtn, { backgroundColor: '#E53935' }]}>
+                <Text style={styles.saveBtnText}>Delete Permanently</Text>
+              </Pressable>
 
-      {loading ? (
-        <View style={styles.emptySearch}>
-          <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={[styles.emptySearchText, { color: colors.textSecondary }]}>
-            Loading recipes...
-          </Text>
-        </View>
-      ) : filteredRecipes.length === 0 ? (
-        <View style={styles.emptySearch}>
-          <Ionicons name="search-outline" size={48} color={colors.textSecondary} />
-          <Text style={[styles.emptySearchText, { color: colors.textSecondary }]}>
-            {recipes.length === 0 ? 'No recipes yet. Add some recipes to get started!' : `No recipes found for "${searchQuery}"`}
-          </Text>
-        </View>
-      ) : (
-        filteredRecipes.map((recipe) => (
-          <Pressable
-            key={recipe.recipe_id}
-            style={[styles.recipeCard, { backgroundColor: colors.card }]}
-            onPress={() => setSelectedRecipe(recipe)}
-          >
-            <Image source={{ uri: recipe.image_url || 'https://via.placeholder.com/90' }} style={styles.thumb} />
-
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.recipeTitle, { color: colors.text }]}>{recipe.name}</Text>
-
-              <View style={styles.metaRow}>
-                <Text style={[styles.metaText, { color: colors.textSecondary }]}>⏱ {recipe.avg_time} min</Text>
-                <Text style={[styles.metaText, { color: colors.textSecondary }]}>⭐ {recipe.rating}</Text>
-                <Text style={[styles.metaText, { color: recipe.price ? colors.primary : '#4CAF50', fontWeight: 'bold' }]}>
-                  {recipe.price ? `$${recipe.price}` : 'Free'}
-                </Text>
-              </View>
+              <Pressable onPress={() => setRecipeToDelete(null)} style={[styles.cancelBtn, { marginTop: 8, alignItems: 'center' }]}>
+                <Text style={{ color: colors.textSecondary, fontSize: 16, fontWeight: '600' }}>Cancel</Text>
+              </Pressable>
             </View>
-          </Pressable>
-        ))
+          </View>
+        </View>
+      </Modal>
+
+      <ScrollView
+        style={[styles.container, { backgroundColor: colors.background }]}
+      >
+        <Text style={[styles.pageTitle, { color: colors.text }]}>My Recipes</Text>
+
+        {/* SEARCH BAR */}
+        <View style={[styles.searchContainer, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <Ionicons name="search" size={20} color={colors.textSecondary} />
+          <TextInput
+            style={[styles.searchInput, { color: colors.text }]}
+            placeholder="Search recipes..."
+            placeholderTextColor={colors.textSecondary}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+          {searchQuery.length > 0 && (
+            <Pressable onPress={() => setSearchQuery('')}>
+              <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
+            </Pressable>
+          )}
+        </View>
+
+        {loading ? (
+          <View style={styles.emptySearch}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={[styles.emptySearchText, { color: colors.textSecondary }]}>
+              Loading recipes...
+            </Text>
+          </View>
+        ) : filteredRecipes.length === 0 ? (
+          <View style={styles.emptySearch}>
+            <Ionicons name="search-outline" size={48} color={colors.textSecondary} />
+            <Text style={[styles.emptySearchText, { color: colors.textSecondary }]}>
+              {recipes.length === 0 ? 'No recipes yet. Add some recipes to get started!' : `No recipes found for "${searchQuery}"`}
+            </Text>
+          </View>
+        ) : (
+          filteredRecipes.map((recipe) => (
+            <Pressable
+              key={recipe.recipe_id}
+              style={[styles.recipeCard, { backgroundColor: colors.card }]}
+              onPress={() => {
+                if (isCookingActive) {
+                  Toast.show({
+                    type: 'info',
+                    text1: 'Cooking in progress',
+                    text2: 'Please stop current session to select a new recipe.',
+                    position: 'bottom'
+                  });
+                  return;
+                }
+                setSelectedRecipe(recipe);
+              }}
+            >
+              <Image source={{ uri: recipe.image_url || 'https://via.placeholder.com/90' }} style={styles.thumb} />
+
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginRight: 10 }}>
+                  <Text style={[styles.recipeTitle, { color: colors.text, flex: 1 }]} numberOfLines={1}>{recipe.name}</Text>
+                  {maxLengthCreatorCheck(recipe.owner_id) && (
+                    <Pressable
+                      hitSlop={15}
+                      onPress={() => handleDeleteRecipe(recipe.recipe_id, recipe.name)}
+                    >
+                      <Ionicons name="trash-outline" size={20} color="#E53935" />
+                    </Pressable>
+                  )}
+                </View>
+
+                <View style={styles.metaRow}>
+                  <Text style={[styles.metaText, { color: colors.textSecondary }]}>⏱ {recipe.avg_time} min</Text>
+                  <Text style={[styles.metaText, { color: colors.textSecondary }]}>⭐ {recipe.rating}</Text>
+                  <Text style={[styles.metaText, { color: recipe.price ? colors.primary : '#4CAF50', fontWeight: 'bold' }]}>
+                    {recipe.price ? `$${recipe.price}` : 'Free'}
+                  </Text>
+                </View>
+              </View>
+            </Pressable>
+          ))
+        )}
+      </ScrollView>
+
+      {/* Cooking in Progress Overlay */}
+      {isCookingActive && (
+        <View style={styles.lockOverlay}>
+          <Ionicons name="lock-closed" size={24} color="#fff" />
+          <Text style={styles.lockText}>Cooking in progress. Please stop current session to select a new recipe.</Text>
+        </View>
       )}
-    </ScrollView>
+    </View>
   );
 }
 
@@ -1198,10 +1576,37 @@ const styles = StyleSheet.create({
 
   stepCard: {
     borderRadius: 14,
-    padding: 12,
     marginBottom: 10,
     borderLeftWidth: 4,
     borderLeftColor: '#E53935',
+    flexDirection: 'row',
+    overflow: 'hidden',
+  },
+
+  // Step reorder controls
+  stepReorderColumn: {
+    width: 44,
+    alignItems: 'center',
+    justifyContent: 'space-evenly',
+    paddingVertical: 6,
+  },
+  stepReorderBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  stepReorderDivider: {
+    height: 1,
+    width: '60%',
+  },
+  stepReorderSeparator: {
+    width: 1,
+    marginVertical: 8,
+  },
+  stepContent: {
+    flex: 1,
+    padding: 12,
   },
 
   stepHeader: {
@@ -1443,5 +1848,28 @@ const styles = StyleSheet.create({
   },
   modalButtonTextConfirm: {
     color: '#fff',
+  },
+  lockOverlay: {
+    position: 'absolute',
+    bottom: 20,
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(229, 57, 53, 0.9)',
+    padding: 16,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  lockText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    flex: 1,
   },
 });

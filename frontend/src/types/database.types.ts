@@ -262,6 +262,7 @@ export interface Database {
                     stir_speed: number
                     status: 'idle' | 'cooking' | 'paused' | 'error'
                     last_updated: string
+                    test_command: string | null
                 }
                 Insert: {
                     id?: string
@@ -269,6 +270,7 @@ export interface Database {
                     stir_speed: number
                     status: 'idle' | 'cooking' | 'paused' | 'error'
                     last_updated?: string
+                    test_command?: string | null
                 }
                 Update: {
                     id?: string
@@ -276,13 +278,14 @@ export interface Database {
                     stir_speed?: number
                     status?: 'idle' | 'cooking' | 'paused' | 'error'
                     last_updated?: string
+                    test_command?: string | null
                 }
             }
             cooking_sessions: {
                 Row: {
                     id: string
                     recipe_id: string
-                    status: 'active' | 'completed' | 'stopped'
+                    status: 'ready' | 'active' | 'completed' | 'stopped'
                     current_step: number
                     steps: Json
                     created_at: string
@@ -290,7 +293,7 @@ export interface Database {
                 Insert: {
                     id?: string
                     recipe_id: string
-                    status: 'active' | 'completed' | 'stopped'
+                    status: 'ready' | 'active' | 'completed' | 'stopped'
                     current_step: number
                     steps: Json
                     created_at?: string
@@ -298,7 +301,7 @@ export interface Database {
                 Update: {
                     id?: string
                     recipe_id?: string
-                    status?: 'active' | 'completed' | 'stopped'
+                    status?: 'ready' | 'active' | 'completed' | 'stopped'
                     current_step?: number
                     steps?: Json
                     created_at?: string
